@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ticketer</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#1f5f99">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #ffffff; --text: #16181d; --muted: #5b6270;
+      --accent: #1f5f99; --accent-text: #ffffff; --bad: #b3261e; --border: #dde1e7;
+      color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111317; --card: #1b1e24; --text: #e8eaee; --muted: #9aa2af;
+        --accent: #6aa9e0; --accent-text: #0b1520; --bad: #f2b8b5; --border: #2c3038;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+    }
+    main { max-width: 34rem; margin: 0 auto; display: grid; gap: 14px; }
+    h1 { font-size: 1.4rem; margin: 4px 0 0; }
+    .sub { color: var(--muted); margin: 0; }
+    section { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; }
+    h2 { font-size: 1rem; margin: 0 0 10px; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 10px 0 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+    dd.bad { color: var(--bad); font-weight: 600; }
+    button, .button {
+      display: block; width: 100%; text-align: center; font: inherit; font-weight: 600;
+      padding: 13px; border: 0; border-radius: 10px; background: var(--accent); color: var(--accent-text);
+      cursor: pointer;
+    }
+    input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Ticketer</h1>
+    <p class="sub">Hello-world checks: HTTPS, identity, GPS, photo upload.</p>
+  </header>
+
+  <section>
+    <h2>Connection</h2>
+    <dl id="status"><dt>Status</dt><dd>checking…</dd></dl>
+  </section>
+
+  <section>
+    <h2>Location</h2>
+    <button id="locate" type="button">Get location</button>
+    <dl id="loc"></dl>
+  </section>
+
+  <section>
+    <h2>Photo</h2>
+    <label class="button" for="photo">Take photo</label>
+    <input id="photo" type="file" accept="image/*" capture="environment">
+    <dl id="shot"></dl>
+  </section>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let lastFix = null;
+
+  // rows: [label, value, isBad?]
+  function show(el, rows) {
+    el.replaceChildren(...rows.flatMap(([label, value, bad]) => {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      if (bad) dd.className = "bad";
+      return [dt, dd];
+    }));
+  }
+
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const baseRows = [
+    ["HTTPS", window.isSecureContext ? "yes" : "NO: camera and GPS are blocked", !window.isSecureContext],
+    ["Opened as", standalone ? "home-screen app" : "browser tab"],
+  ];
+  show($("status"), [...baseRows, ["Server", "contacting…"]]);
+  fetch("/api/whoami")
+    .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then((w) => show($("status"), [
+      ...baseRows,
+      ["Signed in as", w.user_login ? `${w.user_name || ""} <${w.user_login}>`.trim() : "unknown (not via Tailscale Serve?)", !w.user_login],
+      ["Server version", w.version],
+      ["Server time", new Date(w.server_time).toLocaleString()],
+    ]))
+    .catch((e) => show($("status"), [...baseRows, ["Server", `unreachable: ${e.message}`, true]]));
+
+  $("locate").addEventListener("click", () => {
+    if (!("geolocation" in navigator)) return show($("loc"), [["Error", "geolocation not available", true]]);
+    const t0 = performance.now();
+    show($("loc"), [["Status", "waiting for a fix…"]]);
+    navigator.geolocation.getCurrentPosition(
+      ({ coords: c }) => {
+        lastFix = c;
+        show($("loc"), [
+          ["Latitude", c.latitude.toFixed(6)],
+          ["Longitude", c.longitude.toFixed(6)],
+          ["Accuracy", `±${Math.round(c.accuracy)} m`, c.accuracy > 25],
+          ["Heading", c.heading == null || Number.isNaN(c.heading) ? "n/a (only while moving)" : `${Math.round(c.heading)}°`],
+          ["Time to fix", `${Math.round(performance.now() - t0)} ms`],
+        ]);
+      },
+      (e) => show($("loc"), [["Error", `${e.code}: ${e.message}`, true]]),
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
+    );
+  });
+
+  $("photo").addEventListener("change", async () => {
+    const file = $("photo").files[0];
+    if (!file) return;
+    show($("shot"), [["Status", "uploading…"]]);
+
+    let dims = "unknown";
+    try {
+      const bmp = await createImageBitmap(file);
+      dims = `${bmp.width} × ${bmp.height}`;
+      bmp.close();
+    } catch { /* e.g. a format the browser can't decode */ }
+
+    const form = new FormData();
+    form.append("photo", file);
+    if (lastFix) {
+      form.append("lat", lastFix.latitude);
+      form.append("lon", lastFix.longitude);
+      form.append("accuracy_m", lastFix.accuracy);
+    }
+
+    const t0 = performance.now();
+    try {
+      const r = await fetch("/api/probe", { method: "POST", body: form });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      show($("shot"), [
+        ["Type", file.type || "unknown"],
+        ["Dimensions", dims],
+        ["Size", `${(file.size / 1e6).toFixed(2)} MB`],
+        ["Upload", `${j.bytes === file.size ? "OK" : "size mismatch"} in ${Math.round(performance.now() - t0)} ms`, j.bytes !== file.size],
+        ["GPS sent", j.lat != null ? `${j.lat.toFixed(5)}, ${j.lon.toFixed(5)}` : "none (tap Get location first)"],
+      ]);
+    } catch (e) {
+      show($("shot"), [["Upload", `failed: ${e.message}`, true]]);
+    } finally {
+      $("photo").value = "";
+    }
+  });
+</script>
+</body>
+</html>

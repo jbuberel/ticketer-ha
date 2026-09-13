@@ -1,0 +1,12 @@
+configuration:
+  tailscale_auth_key:
+    name: Tailscale auth key
+    description: >-
+      One-off auth key with tag:ticketer. Only used on first start, or after the app's data is
+      reset; the app keeps its own Tailscale identity afterwards.
+  tailscale_hostname:
+    name: Tailscale device name
+    description: Name on your tailnet; the app is served at https://<name>.<tailnet>.ts.net
+  tailscale_tags:
+    name: Tailscale tags
+    description: Comma-separated tags to advertise. Must match the auth key's tags.

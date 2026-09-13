@@ -1,0 +1,21 @@
+# https://developers.home-assistant.io/docs/apps/configuration#app-configuration
+name: Ticketer
+version: "0.1.0"
+slug: ticketer
+description: Phone-captured parking reports, reviewed before submission (hello-world build)
+url: "https://github.com/jbuberel/ticketer-ha"
+arch:
+  - aarch64
+  - amd64
+image: "ghcr.io/jbuberel/ticketer"
+stage: experimental
+startup: application
+boot: auto
+# No ports, no host network, no HA API: the app is reachable only over Tailscale.
+options:
+  tailscale_hostname: ticketer
+  tailscale_tags: "tag:ticketer"
+schema:
+  tailscale_auth_key: "password?"
+  tailscale_hostname: "str"
+  tailscale_tags: "str?"
