@@ -9,8 +9,6 @@ arch:
   - amd64
 image: "ghcr.io/jbuberel/ticketer"
 stage: experimental
-startup: application
-boot: auto
 # No ports, no host network, no HA API: the app is reachable only over Tailscale.
 options:
   tailscale_hostname: ticketer
