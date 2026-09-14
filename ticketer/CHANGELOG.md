@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+- **Extraction.** Queued batches, including ones captured before this version, are processed
+  in the background, one photo at a time:
+  - **Vehicle details:** Claude (default `claude-sonnet-5`) reads plate, state, color, make and
+    model, each with a confidence.
+  - **Plate cross-check:** a local plate reader (fast-alpr) reads the plate too and saves a
+    close-up; the batch view shows whether the two readings match.
+  - **Address:** the GPS fix is reverse-geocoded to the nearest address (a building within 40 m,
+    otherwise a point along the block).
+- Temporary API errors retry with backoff. Failed photos can be re-run with **Retry failed**.
+- Batch view shows each draft and refreshes while extraction runs. The header shows the batch's
+  API cost.
+- New options: **Anthropic API key** and **Extraction model**.
+
 ## 0.2.1
 
 - Fix: overlapping uploads of the same photo could fail with "not a readable image" and block

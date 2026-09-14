@@ -81,7 +81,14 @@
     }
     .photos li { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
     .photos img { display: block; width: 100%; height: auto; background: var(--subtle); }
-    .photos .small { padding: 8px 10px; }
+    .chip.ok, .chip.ready { background: var(--ok-bg); color: var(--ok); }
+    .chip.warn, .chip.processing { background: var(--warn-bg); color: var(--warn); }
+    .chip.bad { background: var(--bad-bg); color: var(--bad); }
+    .draft-body { padding: 10px 12px 12px; display: grid; gap: 6px; }
+    .plate-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .plate { font: 700 1.5rem/1.2 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 0.06em; }
+    .photos img.plate-crop { width: 240px; max-width: 100%; border-radius: 6px; }
+    .button.inline { display: inline-block; width: auto; padding: 6px 12px; margin-left: 8px; }
     .back { text-decoration: none; font-weight: 600; }
     #toast {
       position: fixed; left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom));

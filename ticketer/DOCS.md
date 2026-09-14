@@ -1,7 +1,8 @@
 # Ticketer
 
 Take GPS-tagged photos of vehicles on a walk. They're grouped into a batch and stored on this
-Home Assistant server, ready for processing. Plate and vehicle extraction come in a later
+Home Assistant server. Each photo is then turned into a draft: plate, state, color, make, model
+and the nearest street address. Reviewing, editing and submitting drafts come in a later
 version.
 
 The app joins your Tailscale network (tailnet) as its own device and serves the phone app at
@@ -26,7 +27,11 @@ The app joins your Tailscale network (tailnet) as its own device and serves the 
 1. Home Assistant → **Settings → Apps → App store → ⋮ → Repositories**, add
    `https://github.com/jbuberel/ticketer-ha`.
 2. Install **Ticketer**.
-3. **Configuration** tab: paste the key into **Tailscale auth key** and save.
+3. **Configuration** tab:
+   - Paste the Tailscale key into **Tailscale auth key**.
+   - Set **Anthropic API key**; create one at console.anthropic.com → API keys. Without it,
+     photos are stored but not extracted.
+   - Save.
 4. Start the app and open the **Log** tab. You should see
    `[ticketer] serving https://ticketer.<tailnet>.ts.net/`.
 5. On your phone (with Tailscale connected), open that URL and add it to your home screen.
@@ -44,16 +49,35 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
      background.
    - If there's no recent fix, the photo waits a few seconds for one.
 3. **Stop Capture & Process** when you're done. It waits for the remaining uploads, then
-   queues the batch.
+   queues the batch for extraction.
+4. The batch view fills in as each photo is processed, usually 5–10 s per photo. Each draft
+   shows:
+   - **Plate** and state, with Claude's confidence.
+   - **Local plate reader:** a second, on-device plate reading, and whether it matches.
+   - A **close-up** of the plate.
+   - **Vehicle:** color, make and model, with a confidence.
+   - **Address:** the nearest street address to the GPS fix, and how far away it is. A
+     "building" match is a specific address; "along the block" is an estimate.
+
+   Treat a plate as trustworthy only when it's `plate high` **and** the local reader matches.
+   Check anything else against the close-up. If some photos fail, tap **Retry failed**.
 
 To take out a bad shot, tap **✕** on it; **Discard session** throws the whole session away.
 If the app is closed or the page reloads mid-session, reopening it resumes the session.
 
 ## Your data
 
-- Stored in the app's data folder: `ticketer.db` (batches, times, locations) and `photos/`.
-- Photos are excluded from Home Assistant backups. The database is included.
-- Nothing is sent anywhere else in this version, and nothing is deleted automatically yet.
+- Stored in the app's data folder: `ticketer.db` (batches, locations, drafts) and `photos/`
+  (photos and plate close-ups).
+- Photos are excluded from Home Assistant backups. The database, including extracted plates, is
+  included.
+- **Sent elsewhere:**
+  - Each photo, downscaled and with its metadata removed, goes to the **Anthropic API** for
+    extraction.
+  - Each photo's GPS position goes to the **ArcGIS geocoder** that the City of Sacramento 311
+    address map uses.
+  - The local plate reader runs on this server.
+- Nothing is deleted automatically yet.
 
 ## Troubleshooting
 
@@ -64,4 +88,5 @@ If the app is closed or the page reloads mid-session, reopening it resumes the s
 | Log: `requested tags ... are invalid or not permitted` | Add the `tagOwners` entry; make sure the key has `tag:ticketer` |
 | Device shows up as `ticketer-1` | An old `ticketer` device exists; delete it in the admin console and restart |
 | App: `Not signed in: No Tailscale identity` | Open the `https://ticketer.<tailnet>.ts.net` address, with Tailscale connected |
+| Phone: "Can't connect to the site", yet Tailscale is connected and `tailscale ping ticketer` works | The phone can't look up the `ts.net` name (the app log shows no requests). To confirm, open `https://<ticketer's Tailscale IP>/`: "can't provide a secure connection" means the connection works and only the lookup fails. Set Android Private DNS to Automatic/Off, set Chrome secure DNS to your current provider or off, check **Use Tailscale DNS** is on in the Tailscale app. If it still fails, restart the phone |
 | GPS bar: `Location permission denied` | Allow location for the site (iPhone: Settings → Privacy & Security → Location Services → Safari Websites) |

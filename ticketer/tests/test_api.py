@@ -25,7 +25,7 @@ def jpeg(width=40, height=30, orientation=None, color="red") -> bytes:
 
 @pytest.fixture
 def settings(tmp_path):
-    return Settings(data_dir=tmp_path, max_photo_bytes=200_000)
+    return Settings(data_dir=tmp_path, max_photo_bytes=200_000, run_worker=False)
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def test_requires_tailscale_identity(client):
 
 
 def test_dev_user_fallback(tmp_path):
-    with TestClient(create_app(Settings(data_dir=tmp_path, dev_user="dev@example.com"))) as c:
+    with TestClient(create_app(Settings(data_dir=tmp_path, dev_user="dev@example.com", run_worker=False))) as c:
         assert c.get("/api/whoami").json()["user_login"] == "dev@example.com"
 
 

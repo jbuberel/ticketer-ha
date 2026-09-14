@@ -10,3 +10,13 @@ configuration:
   tailscale_tags:
     name: Tailscale tags
     description: Comma-separated tags to advertise. Must match the auth key's tags.
+  anthropic_api_key:
+    name: Anthropic API key
+    description: >-
+      Used to read the plate, color, make and model from each photo. Photos are sent to the
+      Anthropic API for this. Without a key, photos are stored but not extracted.
+  extractor_model:
+    name: Extraction model
+    description: >-
+      Claude model ID. Default claude-sonnet-5. Change it only after checking the candidate with
+      the eval harness.

@@ -373,34 +373,121 @@ async function endSession(session) {
 
 // ---- Batch view ----
 
+const BATCH_REFRESH_MS = 3000;
+const CONFIDENCE_KIND = { high: "ok", medium: "warn", low: "bad" };
+let batchTimer = null;
+
+// Re-renders in place every few seconds while extraction is running.
 async function renderBatch(id) {
   stopGps();
-  view.dataset.view = "batch";
-  const body = h("div", {}, h("p", { class: "muted" }, "Loading…"));
-  view.replaceChildren(h("a", { class: "back", href: "#/" }, "‹ Back"), body);
-  try {
-    const batch = await api("GET", `/api/batches/${encodeURIComponent(id)}`);
-    const status = {
-      queued: notice("info", "Queued for processing. Plate and vehicle extraction isn't built yet."),
-      capturing: notice("info", "This session is still open on the phone that started it."),
-    }[batch.status];
-    body.replaceChildren(
-      h("header", {},
-        h("h1", {}, fmtDateTime(batch.created_at)),
-        h("p", { class: "muted" }, `${plural(batch.capture_count, "photo")} · ${batch.created_by_name || batch.created_by}`)),
-      status ?? null,
-      h("ul", { class: "photos" }, batch.captures.map((c) => h("li", {},
-        h("img", { src: c.photo_url, loading: "lazy", alt: `Photo taken at ${fmtTime(c.captured_at)}` }),
-        h("div", { class: "small" },
-          `${fmtTime(c.captured_at)} · `,
-          c.lat != null ? `${c.lat.toFixed(5)}, ${c.lon.toFixed(5)} ±${Math.round(c.accuracy_m)} m` : "no location")))),
+  clearTimeout(batchTimer);
+  if (view.dataset.view !== "batch" || view.dataset.batchId !== id) {
+    view.dataset.view = "batch";
+    view.dataset.batchId = id;
+    view.replaceChildren(
+      h("a", { class: "back", href: "#/" }, "‹ Back"),
+      h("div", { id: "batch-body" }, h("p", { class: "muted" }, "Loading…")),
     );
+  }
+  const body = document.getElementById("batch-body");
+  try {
+    const [batch, me] = await Promise.all([api("GET", `/api/batches/${encodeURIComponent(id)}`), whoami]);
+    if (view.dataset.view !== "batch" || view.dataset.batchId !== id) return; // navigated away
+    body.replaceChildren(...batchContent(batch, me).filter(Boolean));
+    if (batch.status === "queued" || batch.status === "processing") {
+      batchTimer = setTimeout(() => {
+        if (location.hash === `#/batch/${id}`) renderBatch(id);
+      }, BATCH_REFRESH_MS);
+    }
   } catch (error) {
     body.replaceChildren(
       notice("error", `Couldn't load this batch: ${error.message}`),
       h("button", { class: "button subtle", onclick: () => renderBatch(id) }, "Try again"),
     );
   }
+}
+
+function batchContent(batch, me) {
+  const drafts = batch.drafts;
+  const status = {
+    capturing: notice("info", "This session is still open on the phone that started it."),
+    queued: me.extraction_enabled === false
+      ? notice("error", "Extraction is off. In Home Assistant, set the Anthropic API key in the Ticketer app's Configuration tab and restart the app.")
+      : notice("info", "Waiting for extraction to start…"),
+    processing: notice("info", `Extracting… ${drafts.done + drafts.error} of ${batch.capture_count} done`),
+  }[batch.status];
+  const cost = batch.cost_usd ? ` · $${batch.cost_usd.toFixed(3)}` : "";
+  return [
+    h("header", {},
+      h("h1", {}, fmtDateTime(batch.created_at)),
+      h("p", { class: "muted" }, `${plural(batch.capture_count, "photo")} · ${batch.created_by_name || batch.created_by}${cost}`)),
+    status,
+    drafts.error ? h("div", { class: "notice error" },
+      `${plural(drafts.error, "photo")} couldn't be extracted.`,
+      h("button", { class: "button subtle inline", onclick: () => retryFailed(batch.id) }, "Retry failed")) : null,
+    h("ul", { class: "photos" }, batch.captures.map(draftCard)),
+  ];
+}
+
+function draftCard(capture) {
+  return h("li", { class: "draft" },
+    h("img", { src: capture.photo_url, loading: "lazy", alt: `Photo taken at ${fmtTime(capture.captured_at)}` }),
+    h("div", { class: "draft-body" }, draftDetails(capture, capture.draft)));
+}
+
+function draftDetails(capture, draft) {
+  const when = h("div", { class: "small muted" },
+    fmtTime(capture.captured_at),
+    capture.lat != null ? ` · GPS ±${Math.round(capture.accuracy_m)} m` : " · no GPS");
+  if (!draft) return [h("p", { class: "muted" }, "Waiting for extraction…"), when];
+  if (draft.status === "pending") {
+    return [h("p", { class: "muted" }, draft.error ? `Will retry: ${draft.error}` : "Extracting…"), when];
+  }
+
+  const rows = [];
+  if (draft.status === "error") rows.push(notice("error", `Extraction failed: ${draft.error}`));
+  if (draft.status === "done") {
+    rows.push(h("div", { class: "plate-row" },
+      h("span", { class: "plate" }, draft.plate_text ?? "no plate"),
+      draft.plate_state ? h("span", { class: "muted" }, draft.plate_state) : null,
+      chip(`plate ${draft.plate_confidence}`, CONFIDENCE_KIND[draft.plate_confidence])));
+  }
+  rows.push(localPlateRow(draft));
+  if (capture.plate_crop_url) rows.push(h("img", { class: "plate-crop", src: capture.plate_crop_url, alt: "Plate close-up" }));
+  if (draft.status === "done") {
+    const vehicle = [draft.color, draft.make, draft.model].filter(Boolean).join(" ") || "Vehicle not identified";
+    rows.push(h("div", {}, `${vehicle} `, chip(`vehicle ${draft.make_model_confidence}`, CONFIDENCE_KIND[draft.make_model_confidence])));
+  }
+  rows.push(addressRow(capture, draft));
+  if (draft.notes) rows.push(h("div", { class: "small muted" }, draft.notes));
+  rows.push(when);
+  return rows;
+}
+
+function localPlateRow(draft) {
+  if (draft.alpr_error) return h("div", { class: "small warn-text" }, `Local plate reader failed: ${draft.alpr_error}`);
+  if (!draft.alpr_text) return h("div", { class: "small muted" }, "Local plate reader: no plate found");
+  const verdict = draft.plates_agree == null ? "" : draft.plates_agree ? " ✓ matches" : " ✗ differs";
+  return h("div", { class: `small ${draft.plates_agree === false ? "warn-text" : "muted"}` },
+    `Local plate reader: ${draft.alpr_text}${verdict}`);
+}
+
+function addressRow(capture, draft) {
+  if (draft.geocode_error) return h("div", { class: "small warn-text" }, `Address lookup failed: ${draft.geocode_error}`);
+  if (capture.lat == null) return h("div", { class: "small warn-text" }, "No GPS fix, so no address");
+  if (!draft.address) return h("div", { class: "small warn-text" }, "No address found near the GPS fix");
+  const kind = draft.address_match === "PointAddress" ? "building" : "along the block";
+  return h("div", {}, `📍 ${draft.address} `,
+    h("span", { class: "small muted" }, `(${kind}, ${Math.round(draft.address_distance_m)} m from GPS)`));
+}
+
+async function retryFailed(id) {
+  try {
+    await api("POST", `/api/batches/${encodeURIComponent(id)}/retry`);
+  } catch (error) {
+    return showError(`Couldn't retry: ${error.message}`);
+  }
+  renderBatch(id);
 }
 
 // ---- Start ----

@@ -1,6 +1,7 @@
-"""Ticketer API: capture sessions (batches of GPS-tagged photos) that are processed later."""
+"""Ticketer API: capture sessions (batches of GPS-tagged photos) and the drafts extracted from them."""
 
 import hashlib
+import logging
 import mimetypes
 import os
 import shutil
@@ -19,13 +20,19 @@ from PIL import Image
 from pydantic import BaseModel
 
 from .db import Database
+from .extract import ClaudeExtractor
+from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder
+from .plates import FastAlprReader
+from .worker import Pipeline, Worker, plate_crop_path
 
 VERSION = os.environ.get("TICKETER_VERSION", "dev")
 STATIC_DIR = Path(__file__).parent / "static"
 PHOTO_FORMATS = {"JPEG": (".jpg", "image/jpeg"), "PNG": (".png", "image/png")}
 EXIF_ORIENTATION = 0x0112
+DEFAULT_EXTRACTOR_MODEL = "claude-sonnet-5"
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 @dataclass(frozen=True)
@@ -33,13 +40,29 @@ class Settings:
     data_dir: Path
     dev_user: str | None = None  # login to assume without a Tailscale header; local dev only
     max_photo_bytes: int = 30 * 1024 * 1024
+    anthropic_api_key: str | None = None
+    extractor_model: str = DEFAULT_EXTRACTOR_MODEL
+    geocoder_url: str = CITY_311_GEOCODER
+    run_worker: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
             data_dir=Path(os.environ.get("DATA_DIR", "/data")),
             dev_user=os.environ.get("TICKETER_DEV_USER") or None,
+            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
+            extractor_model=os.environ.get("TICKETER_EXTRACTOR_MODEL") or DEFAULT_EXTRACTOR_MODEL,
+            geocoder_url=os.environ.get("TICKETER_GEOCODER_URL") or CITY_311_GEOCODER,
         )
+
+
+def default_pipeline(settings: Settings) -> Pipeline:
+    return Pipeline(
+        extractor=(ClaudeExtractor(settings.extractor_model, settings.anthropic_api_key)
+                   if settings.anthropic_api_key else None),
+        plate_reader=FastAlprReader(),
+        geocoder=ArcGisReverseGeocoder(settings.geocoder_url),
+    )
 
 
 @dataclass(frozen=True)
@@ -91,19 +114,41 @@ def inspect_image(path: Path) -> tuple[str, int, int]:
     return fmt, width, height
 
 
+CAPTURE_FIELDS = ("id", "captured_at", "lat", "lon", "accuracy_m", "heading", "speed_mps", "fix_at",
+                  "width", "height", "bytes", "content_type", "received_at")
+DRAFT_FIELDS = ("status", "error", "attempts", "plate_text", "plate_state", "plate_confidence", "color", "make",
+                "model", "make_model_confidence", "notes", "extractor_model", "cost_usd", "alpr_text",
+                "alpr_confidence", "alpr_error", "plates_agree", "address", "address_full", "address_match",
+                "address_distance_m", "geocode_error", "extracted_at")
+CAPTURES_WITH_DRAFTS = (
+    "SELECT c.*, d.capture_id AS d_capture_id, d.alpr_box AS d_alpr_box, "
+    + ", ".join(f"d.{f} AS d_{f}" for f in DRAFT_FIELDS)
+    + " FROM captures c LEFT JOIN drafts d ON d.capture_id = c.id WHERE c.batch_id = ? ORDER BY c.captured_at"
+)
+
+
 def capture_json(row: sqlite3.Row) -> dict:
-    fields = ("id", "captured_at", "lat", "lon", "accuracy_m", "heading", "speed_mps", "fix_at",
-              "width", "height", "bytes", "content_type", "received_at")
-    return {k: row[k] for k in fields} | {
-        "photo_url": f"/api/batches/{row['batch_id']}/captures/{row['id']}/photo",
-    }
+    base = f"/api/batches/{row['batch_id']}/captures/{row['id']}"
+    out = {k: row[k] for k in CAPTURE_FIELDS} | {"photo_url": f"{base}/photo", "plate_crop_url": None, "draft": None}
+    if "d_capture_id" in row.keys() and row["d_capture_id"]:
+        draft = {f: row[f"d_{f}"] for f in DRAFT_FIELDS}
+        if draft["plates_agree"] is not None:
+            draft["plates_agree"] = bool(draft["plates_agree"])
+        out["draft"] = draft
+        if row["d_alpr_box"]:
+            out["plate_crop_url"] = f"{base}/plate"
+    return out
 
 
 def batch_json(conn: sqlite3.Connection, row: sqlite3.Row, with_captures: bool = False) -> dict:
-    captures = conn.execute(
-        "SELECT * FROM captures WHERE batch_id = ? ORDER BY captured_at", (row["id"],)
-    ).fetchall()
-    out = dict(row) | {"capture_count": len(captures)}
+    captures = conn.execute(CAPTURES_WITH_DRAFTS, (row["id"],)).fetchall()
+    counts = {"pending": 0, "done": 0, "error": 0}
+    cost = 0.0
+    for capture in captures:
+        if capture["d_status"] in counts:
+            counts[capture["d_status"]] += 1
+        cost += capture["d_cost_usd"] or 0.0
+    out = dict(row) | {"capture_count": len(captures), "drafts": counts, "cost_usd": round(cost, 4)}
     if with_captures:
         out["captures"] = [capture_json(c) for c in captures]
     return out
@@ -126,18 +171,26 @@ def require_capturing(batch: sqlite3.Row) -> None:
         raise HTTPException(409, f"Batch is {batch['status']} and no longer accepts changes")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, pipeline: Pipeline | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     db = Database(settings.data_dir / "ticketer.db")
     photos_dir = settings.data_dir / "photos"
+    worker = Worker(db, settings.data_dir, pipeline or default_pipeline(settings))
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         photos_dir.mkdir(parents=True, exist_ok=True)
         db.init()
-        yield
+        if settings.run_worker:
+            worker.start()
+        try:
+            yield
+        finally:
+            worker.stop()
 
     app = FastAPI(title="Ticketer", version=VERSION, lifespan=lifespan)
+    app.state.db = db
+    app.state.worker = worker
 
     def current_user(request: Request) -> User:
         # Tailscale Serve sets these headers; the API itself only listens on localhost.
@@ -154,8 +207,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/whoami")
     def whoami(user: CurrentUser) -> dict:
-        return {"version": VERSION, "server_time": utc_now(),
-                "user_login": user.login, "user_name": user.name}
+        return {"version": VERSION, "server_time": utc_now(), "user_login": user.login,
+                "user_name": user.name, "extraction_enabled": worker.extraction_enabled}
 
     @app.post("/api/batches", status_code=201)
     def create_batch(body: BatchCreate, user: CurrentUser, response: Response) -> dict:
@@ -271,7 +324,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/batches/{batch_id}/process")
     def process_batch(batch_id: uuid.UUID, user: CurrentUser) -> dict:
-        """End the capture session and queue it. Extraction is a later step."""
+        """End the capture session and queue it for extraction."""
         with db.connect() as conn:
             batch = get_batch(conn, batch_id)
             require_owner(batch, user)
@@ -286,7 +339,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     (utc_now(), str(batch_id)),
                 )
                 batch = get_batch(conn, batch_id)
-            return batch_json(conn, batch, with_captures=True)
+            result = batch_json(conn, batch, with_captures=True)
+        worker.wake()
+        return result
+
+    @app.post("/api/batches/{batch_id}/retry")
+    def retry_failed(batch_id: uuid.UUID, user: CurrentUser) -> dict:
+        """Run extraction again for photos whose extraction failed."""
+        with db.connect() as conn:
+            get_batch(conn, batch_id)
+        worker.retry_failed(str(batch_id))
+        with db.connect() as conn:
+            return batch_json(conn, get_batch(conn, batch_id), with_captures=True)
 
     @app.get("/api/batches/{batch_id}/captures/{capture_id}/photo")
     def capture_photo(batch_id: uuid.UUID, capture_id: uuid.UUID, user: CurrentUser) -> FileResponse:
@@ -299,6 +363,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "Capture not found")
         return FileResponse(settings.data_dir / row["photo_path"], media_type=row["content_type"],
                             headers={"Cache-Control": "private, max-age=86400"})
+
+    @app.get("/api/batches/{batch_id}/captures/{capture_id}/plate")
+    def capture_plate_crop(batch_id: uuid.UUID, capture_id: uuid.UUID, user: CurrentUser) -> FileResponse:
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT photo_path FROM captures WHERE id = ? AND batch_id = ?",
+                (str(capture_id), str(batch_id)),
+            ).fetchone()
+        path = settings.data_dir / plate_crop_path(row["photo_path"]) if row else None
+        if path is None or not path.is_file():
+            raise HTTPException(404, "No plate close-up for this photo")
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

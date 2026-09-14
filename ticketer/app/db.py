@@ -1,11 +1,11 @@
-"""SQLite storage for capture batches. One short-lived connection per request."""
+"""SQLite storage for capture batches and drafts. One short-lived connection per operation."""
 
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS batches (
@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS batches (
     created_by      TEXT NOT NULL,      -- Tailscale login
     created_by_name TEXT,
     created_at      TEXT NOT NULL,
-    status          TEXT NOT NULL,      -- capturing | queued
+    status          TEXT NOT NULL,      -- capturing | queued | processing | ready
     closed_at       TEXT
 );
 
@@ -37,6 +37,48 @@ CREATE TABLE IF NOT EXISTS captures (
 );
 
 CREATE INDEX IF NOT EXISTS captures_by_batch ON captures (batch_id, captured_at);
+
+-- One draft per capture, filled in by the extraction worker.
+CREATE TABLE IF NOT EXISTS drafts (
+    capture_id            TEXT PRIMARY KEY REFERENCES captures(id) ON DELETE CASCADE,
+    batch_id              TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+    status                TEXT NOT NULL,        -- pending | done | error
+    attempts              INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at       TEXT,
+    error                 TEXT,
+    created_at            TEXT NOT NULL,
+    extracted_at          TEXT,
+    -- extractor (Claude)
+    plate_text            TEXT,
+    plate_state           TEXT,
+    plate_confidence      TEXT,                 -- high | medium | low
+    color                 TEXT,
+    make                  TEXT,
+    model                 TEXT,
+    make_model_confidence TEXT,
+    notes                 TEXT,
+    extractor_model       TEXT,
+    request_id            TEXT,
+    input_tokens          INTEGER,
+    output_tokens         INTEGER,
+    cost_usd              REAL,
+    -- local plate reader (fast-alpr)
+    alpr_text             TEXT,
+    alpr_confidence       REAL,
+    alpr_box              TEXT,                 -- JSON [x1, y1, x2, y2]
+    alpr_error            TEXT,
+    plates_agree          INTEGER,              -- 1 / 0, NULL when either reading is missing
+    -- reverse geocode of the GPS fix
+    address               TEXT,
+    address_full          TEXT,
+    address_match         TEXT,                 -- PointAddress | StreetAddress
+    address_lat           REAL,
+    address_lon           REAL,
+    address_distance_m    REAL,
+    geocode_error         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS drafts_by_status ON drafts (status, next_attempt_at);
 """
 
 

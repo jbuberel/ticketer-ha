@@ -1,8 +1,8 @@
 # https://developers.home-assistant.io/docs/apps/configuration#app-configuration
 name: Ticketer
-version: "0.2.1"
+version: "0.3.0"
 slug: ticketer
-description: Phone-captured parking reports, reviewed before submission (capture build)
+description: Phone-captured parking reports, reviewed before submission (extraction build)
 url: "https://github.com/jbuberel/ticketer-ha"
 arch:
   - aarch64
@@ -17,7 +17,10 @@ backup_exclude:
 options:
   tailscale_hostname: ticketer
   tailscale_tags: "tag:ticketer"
+  extractor_model: claude-sonnet-5
 schema:
   tailscale_auth_key: "password?"
   tailscale_hostname: "str"
   tailscale_tags: "str?"
+  anthropic_api_key: "password?"
+  extractor_model: "str"

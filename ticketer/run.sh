@@ -76,6 +76,13 @@ else
   fi
 fi
 
+# Extraction settings. The key goes only into the API process's environment; it is never logged.
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(opt anthropic_api_key "")}"
+export TICKETER_EXTRACTOR_MODEL="${TICKETER_EXTRACTOR_MODEL:-$(opt extractor_model claude-sonnet-5)}"
+if [[ -z "$ANTHROPIC_API_KEY" ]]; then
+  log "anthropic_api_key is not set: photos will be stored but not extracted"
+fi
+
 cd /srv
 exec uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" \
   --proxy-headers --forwarded-allow-ips 127.0.0.1
