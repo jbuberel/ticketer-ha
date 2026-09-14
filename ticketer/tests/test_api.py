@@ -2,6 +2,7 @@
 
 import io
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -104,6 +105,17 @@ def test_upload_retry_is_idempotent(client):
     _, different = upload(client, batch_id, capture_id, photo=jpeg(color="blue"))
     assert (first.status_code, again.status_code, different.status_code) == (201, 200, 409)
     assert client.get(f"/api/batches/{batch_id}", headers=ALICE).json()["capture_count"] == 1
+
+
+def test_concurrent_retries_of_the_same_photo(client, settings):
+    # Two open copies of the app (or a retry that overlaps a slow first attempt) can send the
+    # same capture at once. Exactly one stores it; the rest see it as already stored.
+    batch_id = new_batch(client)
+    capture_id, photo = str(uuid.uuid4()), jpeg(2000, 1500)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        codes = sorted(pool.map(lambda _: upload(client, batch_id, capture_id, photo=photo)[1].status_code, range(6)))
+    assert codes == [200, 200, 200, 200, 200, 201]
+    assert [p.name for p in (settings.data_dir / "photos" / batch_id).iterdir()] == [f"{capture_id}.jpg"]
 
 
 def test_rejects_non_images_and_oversized_uploads(client, settings):

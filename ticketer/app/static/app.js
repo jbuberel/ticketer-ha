@@ -396,7 +396,10 @@ async function renderBatch(id) {
           c.lat != null ? `${c.lat.toFixed(5)}, ${c.lon.toFixed(5)} ±${Math.round(c.accuracy_m)} m` : "no location")))),
     );
   } catch (error) {
-    body.replaceChildren(notice("error", `Couldn't load this batch: ${error.message}`));
+    body.replaceChildren(
+      notice("error", `Couldn't load this batch: ${error.message}`),
+      h("button", { class: "button subtle", onclick: () => renderBatch(id) }, "Try again"),
+    );
   }
 }
 

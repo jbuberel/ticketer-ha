@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- Fix: overlapping uploads of the same photo could fail with "not a readable image" and block
+  **Stop Capture & Process**. This happens when the app is open twice, or a retry overlaps a
+  slow first attempt. The uploads now run one at a time and the extras are treated as already
+  stored.
+- Server requests time out (20 s, uploads 2 min) and show an error instead of a stuck
+  "Loading…". The batch view has a **Try again** button.
+
 ## 0.2.0
 
 - Capture sessions: **Begin Capture** → **Snap photo** (repeat) → **Stop Capture & Process**.

@@ -222,12 +222,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         batch_dir = photos_dir / str(batch_id)
         batch_dir.mkdir(parents=True, exist_ok=True)
-        tmp = batch_dir / f".{capture_id}.upload"
+        tmp = batch_dir / f".{capture_id}.{uuid.uuid4().hex}.upload"  # unique: retries can overlap
         try:
             sha256, size = save_limited(photo.file, tmp, settings.max_photo_bytes)
             fmt, width, height = inspect_image(tmp)
             ext, content_type = PHOTO_FORMATS[fmt]
-            with db.connect() as conn:
+            with db.connect(immediate=True) as conn:
                 batch = get_batch(conn, batch_id)
                 existing = conn.execute(
                     "SELECT * FROM captures WHERE id = ?", (str(capture_id),)
@@ -240,7 +240,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 require_capturing(batch)
 
                 photo_path = f"photos/{batch_id}/{capture_id}{ext}"
-                os.replace(tmp, settings.data_dir / photo_path)
                 conn.execute(
                     "INSERT INTO captures (id, batch_id, photo_path, content_type, bytes, sha256,"
                     " width, height, captured_at, lat, lon, accuracy_m, heading, speed_mps, fix_at,"
@@ -249,6 +248,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                      width, height, to_utc(captured_at), lat, lon, accuracy_m, heading, speed_mps,
                      to_utc(fix_at) if fix_at else None, utc_now()),
                 )
+                os.replace(tmp, settings.data_dir / photo_path)  # after the insert, so a failed insert leaves no file
                 row = conn.execute("SELECT * FROM captures WHERE id = ?", (str(capture_id),)).fetchone()
                 return capture_json(row)
         finally:

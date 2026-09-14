@@ -52,10 +52,13 @@ class Database:
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
+    def connect(self, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+        """immediate=True takes the write lock up front, so check-then-insert blocks run one at a time."""
         conn = sqlite3.connect(self.path, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        if immediate:
+            conn.execute("BEGIN IMMEDIATE")
         try:
             yield conn
             conn.commit()

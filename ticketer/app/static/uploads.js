@@ -5,6 +5,7 @@ import { api } from "./api.js";
 import * as store from "./store.js";
 
 const RETRY_MS = 5000;
+const UPLOAD_TIMEOUT_MS = 120000; // a few MB over a weak cellular signal
 
 let running = null;
 let again = false;
@@ -74,6 +75,7 @@ async function uploadPass() {
     try {
       await api("PUT", `/api/batches/${session.batchId}/captures/${capture.id}`, {
         form: captureForm(capture, photo),
+        timeoutMs: UPLOAD_TIMEOUT_MS,
       });
       await store.updateCapture(capture.id, { state: "uploaded" });
     } catch (error) {
