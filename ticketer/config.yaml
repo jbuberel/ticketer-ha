@@ -1,14 +1,18 @@
 # https://developers.home-assistant.io/docs/apps/configuration#app-configuration
 name: Ticketer
-version: "0.1.0"
+version: "0.2.0"
 slug: ticketer
-description: Phone-captured parking reports, reviewed before submission (hello-world build)
+description: Phone-captured parking reports, reviewed before submission (capture build)
 url: "https://github.com/jbuberel/ticketer-ha"
 arch:
   - aarch64
   - amd64
 image: "ghcr.io/jbuberel/ticketer"
 stage: experimental
+# Supervisor matches each pattern against the right-hand end of every file path under /data,
+# so this skips photos/<batch>/<file> and keeps ticketer.db.
+backup_exclude:
+  - "photos/*/*"
 # No ports, no host network, no HA API: the app is reachable only over Tailscale.
 options:
   tailscale_hostname: ticketer

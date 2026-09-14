@@ -6,7 +6,7 @@
 set -euo pipefail
 
 OPTIONS_FILE="${OPTIONS_FILE:-/data/options.json}"
-DATA_DIR="${DATA_DIR:-/data}"
+export DATA_DIR="${DATA_DIR:-/data}"  # the API keeps its database and photos here
 API_PORT="${API_PORT:-8099}"
 TS_SOCKET="/tmp/tailscaled.sock"
 
