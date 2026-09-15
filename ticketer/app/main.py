@@ -121,7 +121,7 @@ DRAFT_FIELDS = ("status", "error", "attempts", "plate_text", "plate_state", "pla
                 "alpr_confidence", "alpr_error", "plates_agree", "address", "address_full", "address_match",
                 "address_distance_m", "geocode_error", "extracted_at")
 CAPTURES_WITH_DRAFTS = (
-    "SELECT c.*, d.capture_id AS d_capture_id, d.alpr_box AS d_alpr_box, "
+    "SELECT c.*, d.capture_id AS d_capture_id, d.alpr_box AS d_alpr_box, "  # extracted_at is in DRAFT_FIELDS
     + ", ".join(f"d.{f} AS d_{f}" for f in DRAFT_FIELDS)
     + " FROM captures c LEFT JOIN drafts d ON d.capture_id = c.id WHERE c.batch_id = ? ORDER BY c.captured_at"
 )
@@ -136,7 +136,9 @@ def capture_json(row: sqlite3.Row) -> dict:
             draft["plates_agree"] = bool(draft["plates_agree"])
         out["draft"] = draft
         if row["d_alpr_box"]:
-            out["plate_crop_url"] = f"{base}/plate"
+            # The close-up is rewritten when a draft is re-run; a new URL keeps phones from showing a cached one.
+            version = hashlib.sha1(f"{row['d_extracted_at']}{row['d_alpr_box']}".encode()).hexdigest()[:12]
+            out["plate_crop_url"] = f"{base}/plate?v={version}"
     return out
 
 

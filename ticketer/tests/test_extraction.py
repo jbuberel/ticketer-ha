@@ -129,26 +129,31 @@ def test_local_reading_matching_the_extracted_plate_is_preferred(make_client):
 
 
 def test_unreadable_detections_are_ignored_and_ranked_by_confidence():
-    tire = PlateRead(text="", ocr_confidence=0.78, detection_confidence=0.74, box=(0, 2008, 278, 2523))
+    tire = PlateRead(text="", ocr_confidence=0.78, detection_confidence=0.74, box=(0, 2000, 280, 2500))
     faint = PlateRead(text="__", ocr_confidence=0.40, detection_confidence=0.90, box=(10, 10, 40, 30))
-    plate = PlateRead(text="54284L4", ocr_confidence=0.9999, detection_confidence=0.87, box=(1480, 1624, 1719, 1915))
+    plate = PlateRead(text="1TST234", ocr_confidence=0.99, detection_confidence=0.87, box=(1500, 1600, 1700, 1900))
     other = PlateRead(text="7XYZ999", ocr_confidence=0.95, detection_confidence=0.60, box=(0, 0, 50, 25))
     assert readable([tire, other, faint, plate]) == [plate, other]
 
 
 def test_rerun_all_replaces_previous_results(make_client):
     extractor = FakeExtractor(extraction(), extraction(plate_text="7ZZZ000", plate_confidence="low"))
-    with make_client(extractor) as client:
+    plates = FakePlates()
+    with make_client(extractor, plates=plates) as client:
         batch_id, _ = queued_batch(client)
         drain(client)
+        first_crop_url = get(client, batch_id)["captures"][0]["plate_crop_url"]
         assert client.post(f"/api/batches/{batch_id}/retry", headers=ALICE).json()["drafts"]["done"] == 1  # nothing failed
 
+        plates.plates = [PlateRead(text="7ZZZ000", ocr_confidence=0.9, detection_confidence=0.8, box=(8, 4, 34, 18))]
         rerun = client.post(f"/api/batches/{batch_id}/retry?rerun_all=true", headers=ALICE).json()
         assert rerun["status"] == "processing" and rerun["drafts"]["pending"] == 1
         assert rerun["captures"][0]["draft"]["plate_text"] is None  # old results cleared
         drain(client)
-        draft = get(client, batch_id)["captures"][0]["draft"]
-    assert (draft["plate_text"], draft["plate_confidence"], draft["plates_agree"]) == ("7ZZZ000", "low", False)
+        capture = get(client, batch_id)["captures"][0]
+    draft = capture["draft"]
+    assert (draft["plate_text"], draft["plate_confidence"], draft["plates_agree"]) == ("7ZZZ000", "low", True)
+    assert capture["plate_crop_url"] != first_crop_url  # a rewritten close-up gets a new URL, so no stale cache
     assert extractor.calls == 2
 
 

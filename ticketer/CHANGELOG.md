@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+- Fix: after **Re-run extraction**, the phone could keep showing the old plate close-up for up to
+  5 minutes. The server had the new one, but the browser reused its cached copy. The close-up
+  URL now changes whenever the close-up is rewritten.
+
 ## 0.3.1
 
 - Fix: the local plate reader's close-up could show the wrong thing (e.g. a tire) and say "no
