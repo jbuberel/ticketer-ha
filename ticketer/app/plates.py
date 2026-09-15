@@ -1,5 +1,6 @@
 """Local plate reader (fast-alpr: ONNX on CPU). A free second opinion next to the extractor."""
 
+import re
 import threading
 from dataclasses import dataclass
 from typing import Protocol
@@ -21,7 +22,22 @@ class PlateRead:
 
 
 class PlateReader(Protocol):
-    def read(self, image: Image.Image) -> PlateRead | None: ...
+    def read(self, image: Image.Image) -> list[PlateRead]:
+        """Readable plates in the photo, most confident detection first."""
+        ...
+
+
+def normalize_plate(text: str | None) -> str | None:
+    cleaned = re.sub(r"[^A-Z0-9]", "", (text or "").upper())
+    return cleaned or None
+
+
+def readable(plates: list[PlateRead]) -> list[PlateRead]:
+    """Drop detections the OCR couldn't read (the detector also fires on things like tire tread)
+    and rank the rest by detection confidence. Box size is not a signal: street photos often
+    show a small, distant plate next to a large false detection."""
+    kept = [plate for plate in plates if normalize_plate(plate.text)]
+    return sorted(kept, key=lambda plate: plate.detection_confidence or 0.0, reverse=True)
 
 
 def _mean(value) -> float | None:
@@ -45,22 +61,15 @@ class FastAlprReader:
                 self._alpr = ALPR(detector_model=DETECTOR_MODEL, ocr_model=OCR_MODEL)
             return self._alpr
 
-    def read(self, image: Image.Image) -> PlateRead | None:
-        """The largest detected plate, which is normally the subject vehicle's."""
+    def read(self, image: Image.Image) -> list[PlateRead]:
         frame = np.asarray(image.convert("RGB"))[:, :, ::-1].copy()  # RGB -> BGR
-        results = self._model().predict(frame)
-        if not results:
-            return None
-
-        def area(result) -> float:
+        plates = []
+        for result in self._model().predict(frame):
             box = result.detection.bounding_box
-            return (box.x2 - box.x1) * (box.y2 - box.y1)
-
-        best = max(results, key=area)
-        box = best.detection.bounding_box
-        return PlateRead(
-            text=best.ocr.text if best.ocr else None,
-            ocr_confidence=_mean(best.ocr.confidence) if best.ocr else None,
-            detection_confidence=_mean(best.detection.confidence),
-            box=(int(box.x1), int(box.y1), int(box.x2), int(box.y2)),
-        )
+            plates.append(PlateRead(
+                text=result.ocr.text if result.ocr else None,
+                ocr_confidence=_mean(result.ocr.confidence) if result.ocr else None,
+                detection_confidence=_mean(result.detection.confidence),
+                box=(int(box.x1), int(box.y1), int(box.x2), int(box.y2)),
+            ))
+        return readable(plates)

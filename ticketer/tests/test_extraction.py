@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.extract import Extraction, ExtractionError, VehicleReport
 from app.geocode import Address, GeocodeError, parse_reverse_geocode
 from app.main import Settings, create_app
-from app.plates import PlateRead
+from app.plates import PlateRead, readable
 from app.worker import Pipeline
 from test_api import ALICE, jpeg, new_batch, upload
 
@@ -32,13 +32,15 @@ class FakeExtractor:
 
 
 class FakePlates:
-    def __init__(self, text="8ABC123", error=None):
-        self.text, self.error = text, error
+    def __init__(self, text="8ABC123", error=None, plates=None):
+        self.error = error
+        self.plates = plates if plates is not None else (
+            [PlateRead(text=text, ocr_confidence=0.93, detection_confidence=0.81, box=(5, 5, 30, 20))] if text else [])
 
     def read(self, image):
         if self.error:
             raise self.error
-        return PlateRead(text=self.text, ocr_confidence=0.93, detection_confidence=0.81, box=(5, 5, 30, 20))
+        return self.plates
 
 
 class FakeGeocoder:
@@ -111,6 +113,43 @@ def test_plate_disagreement_is_flagged(make_client):
         drain(client)
         draft = get(client, batch_id)["captures"][0]["draft"]
     assert draft["plates_agree"] is False
+
+
+def test_local_reading_matching_the_extracted_plate_is_preferred(make_client):
+    # A background car's plate can be the most confident detection; show the subject's instead.
+    plates = FakePlates(plates=[
+        PlateRead(text="7XYZ999", ocr_confidence=0.99, detection_confidence=0.95, box=(0, 0, 10, 8)),
+        PlateRead(text="8ABC123", ocr_confidence=0.97, detection_confidence=0.70, box=(20, 10, 36, 22)),
+    ])
+    with make_client(FakeExtractor(extraction()), plates=plates) as client:
+        batch_id, _ = queued_batch(client)
+        drain(client)
+        draft = get(client, batch_id)["captures"][0]["draft"]
+    assert (draft["alpr_text"], draft["plates_agree"]) == ("8ABC123", True)
+
+
+def test_unreadable_detections_are_ignored_and_ranked_by_confidence():
+    tire = PlateRead(text="", ocr_confidence=0.78, detection_confidence=0.74, box=(0, 2008, 278, 2523))
+    faint = PlateRead(text="__", ocr_confidence=0.40, detection_confidence=0.90, box=(10, 10, 40, 30))
+    plate = PlateRead(text="54284L4", ocr_confidence=0.9999, detection_confidence=0.87, box=(1480, 1624, 1719, 1915))
+    other = PlateRead(text="7XYZ999", ocr_confidence=0.95, detection_confidence=0.60, box=(0, 0, 50, 25))
+    assert readable([tire, other, faint, plate]) == [plate, other]
+
+
+def test_rerun_all_replaces_previous_results(make_client):
+    extractor = FakeExtractor(extraction(), extraction(plate_text="7ZZZ000", plate_confidence="low"))
+    with make_client(extractor) as client:
+        batch_id, _ = queued_batch(client)
+        drain(client)
+        assert client.post(f"/api/batches/{batch_id}/retry", headers=ALICE).json()["drafts"]["done"] == 1  # nothing failed
+
+        rerun = client.post(f"/api/batches/{batch_id}/retry?rerun_all=true", headers=ALICE).json()
+        assert rerun["status"] == "processing" and rerun["drafts"]["pending"] == 1
+        assert rerun["captures"][0]["draft"]["plate_text"] is None  # old results cleared
+        drain(client)
+        draft = get(client, batch_id)["captures"][0]["draft"]
+    assert (draft["plate_text"], draft["plate_confidence"], draft["plates_agree"]) == ("7ZZZ000", "low", False)
+    assert extractor.calls == 2
 
 
 def test_retryable_error_waits_then_succeeds(make_client):

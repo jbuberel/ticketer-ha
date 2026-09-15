@@ -1,6 +1,6 @@
 # https://developers.home-assistant.io/docs/apps/configuration#app-configuration
 name: Ticketer
-version: "0.3.0"
+version: "0.3.1"
 slug: ticketer
 description: Phone-captured parking reports, reviewed before submission (extraction build)
 url: "https://github.com/jbuberel/ticketer-ha"

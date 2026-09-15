@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 import sqlite3
 import threading
 import time
@@ -15,12 +14,20 @@ from PIL import Image, ImageOps
 from .db import Database
 from .extract import ExtractionError, Extractor
 from .geocode import Geocoder
-from .plates import PlateReader
+from .plates import PlateRead, PlateReader, normalize_plate
 
 log = logging.getLogger("ticketer.worker")
 
 MAX_ATTEMPTS = 5
 POLL_SECONDS = 10
+
+# Draft columns written by a run; cleared before re-running a draft.
+RESULT_COLUMNS = (
+    "error", "extracted_at", "plate_text", "plate_state", "plate_confidence", "color", "make", "model",
+    "make_model_confidence", "notes", "extractor_model", "request_id", "input_tokens", "output_tokens", "cost_usd",
+    "alpr_text", "alpr_confidence", "alpr_box", "alpr_error", "plates_agree", "address", "address_full",
+    "address_match", "address_lat", "address_lon", "address_distance_m", "geocode_error",
+)
 
 
 @dataclass
@@ -32,11 +39,6 @@ class Pipeline:
 
 def utc_iso(dt: datetime | None = None) -> str:
     return (dt or datetime.now(timezone.utc)).isoformat(timespec="seconds")
-
-
-def normalize_plate(text: str | None) -> str | None:
-    cleaned = re.sub(r"[^A-Z0-9]", "", (text or "").upper())
-    return cleaned or None
 
 
 def plate_crop_path(photo_path: str) -> str:
@@ -125,33 +127,34 @@ class Worker:
         log.info("capture %s processed in %.1f s", row["capture_id"][:8], time.monotonic() - started)
         return True
 
-    def retry_failed(self, batch_id: str) -> None:
+    def retry(self, batch_id: str, include_done: bool = False) -> int:
+        """Queue a batch's failed drafts (or all of them) to run again. Returns how many."""
+        statuses = ("error", "done") if include_done else ("error",)
+        reset = ", ".join(f"{column} = NULL" for column in RESULT_COLUMNS)
         with self.db.connect(immediate=True) as conn:
             changed = conn.execute(
-                "UPDATE drafts SET status = 'pending', attempts = 0, error = NULL, next_attempt_at = NULL"
-                " WHERE batch_id = ? AND status = 'error'",
-                (batch_id,),
+                f"UPDATE drafts SET status = 'pending', attempts = 0, next_attempt_at = NULL, {reset}"
+                f" WHERE batch_id = ? AND status IN ({', '.join('?' for _ in statuses)})",
+                (batch_id, *statuses),
             ).rowcount
             if changed:
                 conn.execute("UPDATE batches SET status = 'processing' WHERE id = ? AND status = 'ready'", (batch_id,))
         self.wake()
+        return changed
 
     def _process(self, row: sqlite3.Row) -> None:
-        capture_id = row["capture_id"]
+        capture_id, photo_path = row["capture_id"], row["photo_path"]
         fields: dict = {}
         try:
-            with Image.open(self.data_dir / row["photo_path"]) as original:
+            with Image.open(self.data_dir / photo_path) as original:
                 image = ImageOps.exif_transpose(original).convert("RGB")
         except Exception as e:
             return self._finish(capture_id, error=f"Can't read the photo: {e}")
 
+        local_plates: list[PlateRead] = []
         if self.pipeline.plate_reader:
             try:
-                plate = self.pipeline.plate_reader.read(image)
-                if plate:
-                    fields |= {"alpr_text": normalize_plate(plate.text), "alpr_confidence": plate.ocr_confidence,
-                               "alpr_box": json.dumps(plate.box)}
-                    self._save_crop(image, plate.box, row["photo_path"])
+                local_plates = self.pipeline.plate_reader.read(image)
             except Exception as e:
                 log.exception("plate reader failed for capture %s", capture_id)
                 fields["alpr_error"] = str(e)
@@ -167,6 +170,7 @@ class Worker:
                 fields["geocode_error"] = str(e)
 
         if self.pipeline.extractor is None:
+            fields |= self._local_plate(image, local_plates, None, photo_path)
             return self._finish(capture_id, fields, error="No Anthropic API key is configured (app Configuration tab)")
         try:
             result = self.pipeline.extractor.extract(image)
@@ -174,10 +178,12 @@ class Worker:
             attempts = row["attempts"] + 1
             if e.retryable and attempts < MAX_ATTEMPTS:
                 return self._retry_later(capture_id, attempts, str(e))
+            fields |= self._local_plate(image, local_plates, None, photo_path)
             return self._finish(capture_id, fields, error=str(e))
 
         report = result.report
         plate_text = normalize_plate(report.plate_text)
+        fields |= self._local_plate(image, local_plates, plate_text, photo_path)
         alpr_text = fields.get("alpr_text")
         fields |= {
             "plate_text": plate_text,
@@ -196,6 +202,17 @@ class Worker:
             "plates_agree": None if not (plate_text and alpr_text) else int(plate_text == alpr_text),
         }
         self._finish(capture_id, fields)
+
+    def _local_plate(self, image: Image.Image, plates: list[PlateRead], extracted: str | None,
+                     photo_path: str) -> dict:
+        """Pick the local reading to show and save its close-up. Street photos often include other
+        cars' plates, so prefer the reading that matches the extracted plate, else the most confident."""
+        if not plates:
+            return {}
+        chosen = next((p for p in plates if extracted and normalize_plate(p.text) == extracted), plates[0])
+        self._save_crop(image, chosen.box, photo_path)
+        return {"alpr_text": normalize_plate(chosen.text), "alpr_confidence": chosen.ocr_confidence,
+                "alpr_box": json.dumps(chosen.box)}
 
     def _save_crop(self, image: Image.Image, box: tuple[int, int, int, int], photo_path: str) -> None:
         x1, y1, x2, y2 = box

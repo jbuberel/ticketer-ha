@@ -60,7 +60,10 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
      "building" match is a specific address; "along the block" is an estimate.
 
    Treat a plate as trustworthy only when it's `plate high` **and** the local reader matches.
-   Check anything else against the close-up. If some photos fail, tap **Retry failed**.
+   Check anything else against the close-up.
+   - If some photos fail, tap **Retry failed**.
+   - **Re-run extraction**, at the bottom of a finished batch, replaces all of its results with
+     a fresh run. It makes new API calls.
 
 To take out a bad shot, tap **✕** on it; **Discard session** throws the whole session away.
 If the app is closed or the page reloads mid-session, reopening it resumes the session.

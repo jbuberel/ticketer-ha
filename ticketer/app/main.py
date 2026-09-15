@@ -344,11 +344,11 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         return result
 
     @app.post("/api/batches/{batch_id}/retry")
-    def retry_failed(batch_id: uuid.UUID, user: CurrentUser) -> dict:
-        """Run extraction again for photos whose extraction failed."""
+    def retry_extraction(batch_id: uuid.UUID, user: CurrentUser, rerun_all: bool = False) -> dict:
+        """Run extraction again for photos whose extraction failed, or for every photo (rerun_all)."""
         with db.connect() as conn:
             get_batch(conn, batch_id)
-        worker.retry_failed(str(batch_id))
+        worker.retry(str(batch_id), include_done=rerun_all)
         with db.connect() as conn:
             return batch_json(conn, get_batch(conn, batch_id), with_captures=True)
 

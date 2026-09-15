@@ -424,8 +424,11 @@ function batchContent(batch, me) {
     status,
     drafts.error ? h("div", { class: "notice error" },
       `${plural(drafts.error, "photo")} couldn't be extracted.`,
-      h("button", { class: "button subtle inline", onclick: () => retryFailed(batch.id) }, "Retry failed")) : null,
+      h("button", { class: "button subtle inline", onclick: () => retryExtraction(batch.id) }, "Retry failed")) : null,
     h("ul", { class: "photos" }, batch.captures.map(draftCard)),
+    batch.status === "ready" && drafts.done
+      ? h("button", { class: "button subtle", onclick: () => rerunBatch(batch) }, "Re-run extraction")
+      : null,
   ];
 }
 
@@ -481,13 +484,21 @@ function addressRow(capture, draft) {
     h("span", { class: "small muted" }, `(${kind}, ${Math.round(draft.address_distance_m)} m from GPS)`));
 }
 
-async function retryFailed(id) {
+async function retryExtraction(id, rerunAll = false) {
   try {
-    await api("POST", `/api/batches/${encodeURIComponent(id)}/retry`);
+    await api("POST", `/api/batches/${encodeURIComponent(id)}/retry${rerunAll ? "?rerun_all=true" : ""}`);
   } catch (error) {
     return showError(`Couldn't retry: ${error.message}`);
   }
+  window.scrollTo(0, 0);
   renderBatch(id);
+}
+
+function rerunBatch(batch) {
+  const estimate = batch.cost_usd ? ` (about $${batch.cost_usd.toFixed(2)} again)` : "";
+  if (confirm(`Re-run extraction for all ${plural(batch.capture_count, "photo")}? This replaces the current results and makes new API calls${estimate}.`)) {
+    retryExtraction(batch.id, true);
+  }
 }
 
 // ---- Start ----

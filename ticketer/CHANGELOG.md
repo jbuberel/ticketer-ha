@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1
+
+- Fix: the local plate reader's close-up could show the wrong thing (e.g. a tire) and say "no
+  plate found" while the real plate was detected and read correctly.
+  - Detections with no readable text are now ignored.
+  - The rest are ranked by detection confidence instead of box size.
+  - When a photo shows several plates, the reading that matches Claude's plate is used.
+- **Re-run extraction** button on finished batches: replaces all results for the batch with a
+  fresh run, e.g. to pick up this fix.
+
 ## 0.3.0
 
 - **Extraction.** Queued batches, including ones captured before this version, are processed
