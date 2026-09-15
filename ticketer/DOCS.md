@@ -2,8 +2,8 @@
 
 Take GPS-tagged photos of vehicles on a walk. They're grouped into a batch and stored on this
 Home Assistant server. Each photo is then turned into a draft: plate, state, color, make, model
-and the nearest street address. Reviewing, editing and submitting drafts come in a later
-version.
+and the nearest street address. You review each draft: fix anything that's wrong, then choose
+**Report** or **Don't report**. Sending reports to 311 comes in a later version.
 
 The app joins your Tailscale network (tailnet) as its own device and serves the phone app at
 `https://ticketer.<your-tailnet>.ts.net`. It is **not** exposed on your LAN or the internet.
@@ -63,7 +63,19 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
    Check anything else against the close-up.
    - If some photos fail, tap **Retry failed**.
    - **Re-run extraction**, at the bottom of a finished batch, replaces all of its results with
-     a fresh run. It makes new API calls.
+     a fresh run. It makes new API calls. Your edits are kept; Report / Don't report choices are
+     cleared.
+5. **Review** each draft once the batch is finished. The home screen shows how many are left.
+   - The yellow box lists what to check: the plate, a plate that appears twice, a low-confidence
+     vehicle, weak GPS or an estimated address, and missing fields.
+   - **Edit** to fix any field. The form shows the plate close-up; when Claude and the local
+     reader disagree, tap either reading to use it.
+   - **Report** marks the draft to be sent. It needs plate, color, make, model and address. A
+     plate that isn't trusted (see above) has to be corrected, or you tick **The plate above
+     matches the photo**.
+   - **Don't report** for anything that shouldn't be reported, such as a guest with a pass.
+     Tap a chosen option again to undo it.
+   - Only the person who captured a batch can review it.
 
 To take out a bad shot, tap **✕** on it; **Discard session** throws the whole session away.
 If the app is closed or the page reloads mid-session, reopening it resumes the session.

@@ -148,7 +148,7 @@ async function renderHome() {
     list.replaceChildren(...(batches.length
       ? batches.map((b) => h("a", { class: "batch", href: `#/batch/${b.id}` },
         h("span", {}, h("strong", {}, fmtDateTime(b.created_at)), h("span", { class: "muted" }, ` · ${b.created_by_name || b.created_by}`)),
-        h("span", {}, `${plural(b.capture_count, "photo")} `, chip(b.status, b.status))))
+        h("span", {}, `${plural(b.capture_count, "photo")} `, batchChip(b))))
       : [h("p", { class: "muted" }, "No batches yet.")]));
   } catch (error) {
     list.replaceChildren(notice("error", `Couldn't load batches: ${error.message}`));
@@ -375,7 +375,15 @@ async function endSession(session) {
 
 const BATCH_REFRESH_MS = 3000;
 const CONFIDENCE_KIND = { high: "ok", medium: "warn", low: "bad" };
+const WEAK_GPS_M = 25;
+const FIELDS = [["plate_text", "Plate"], ["plate_state", "State"], ["color", "Color"], ["make", "Make"], ["model", "Model"], ["address", "Address"]];
+const REQUIRED_TO_REPORT = [["plate_text", "plate"], ["color", "color"], ["make", "make"], ["model", "model"], ["address", "address"]];
+const missingFields = (values) => REQUIRED_TO_REPORT.filter(([f]) => !values[f]).map(([, label]) => label);
+const edited = (edits, ...fields) => fields.some((f) => f in edits);
 let batchTimer = null;
+let shown = null; // { batch, me } on screen
+let editing = null; // { id, values, plateChecked, reportAfter } for the draft whose edit form is open
+let saving = null; // capture id with a review change in flight
 
 // Re-renders in place every few seconds while extraction is running.
 async function renderBatch(id) {
@@ -384,6 +392,8 @@ async function renderBatch(id) {
   if (view.dataset.view !== "batch" || view.dataset.batchId !== id) {
     view.dataset.view = "batch";
     view.dataset.batchId = id;
+    shown = null;
+    editing = null;
     view.replaceChildren(
       h("a", { class: "back", href: "#/" }, "‹ Back"),
       h("div", { id: "batch-body" }, h("p", { class: "muted" }, "Loading…")),
@@ -393,7 +403,8 @@ async function renderBatch(id) {
   try {
     const [batch, me] = await Promise.all([api("GET", `/api/batches/${encodeURIComponent(id)}`), whoami]);
     if (view.dataset.view !== "batch" || view.dataset.batchId !== id) return; // navigated away
-    body.replaceChildren(...batchContent(batch, me).filter(Boolean));
+    shown = { batch, me };
+    drawBatch();
     if (batch.status === "queued" || batch.status === "processing") {
       batchTimer = setTimeout(() => {
         if (location.hash === `#/batch/${id}`) renderBatch(id);
@@ -407,14 +418,27 @@ async function renderBatch(id) {
   }
 }
 
+function batchChip(batch) {
+  if (batch.status !== "ready") return chip(batch.status, batch.status);
+  return batch.review.undecided ? chip(`${batch.review.undecided} to review`, "warn") : chip("reviewed", "ok");
+}
+
+function drawBatch() {
+  const body = document.getElementById("batch-body");
+  if (!body || !shown || view.dataset.batchId !== shown.batch.id) return;
+  body.replaceChildren(...batchContent(shown.batch, shown.me).filter(Boolean));
+}
+
 function batchContent(batch, me) {
   const drafts = batch.drafts;
+  const canReview = batch.status === "ready" && me.user_login === batch.created_by;
   const status = {
     capturing: notice("info", "This session is still open on the phone that started it."),
     queued: me.extraction_enabled === false
       ? notice("error", "Extraction is off. In Home Assistant, set the Anthropic API key in the Ticketer app's Configuration tab and restart the app.")
       : notice("info", "Waiting for extraction to start…"),
     processing: notice("info", `Extracting… ${drafts.done + drafts.error} of ${batch.capture_count} done`),
+    ready: reviewSummary(batch, canReview),
   }[batch.status];
   const cost = batch.cost_usd ? ` · $${batch.cost_usd.toFixed(3)}` : "";
   return [
@@ -425,46 +449,103 @@ function batchContent(batch, me) {
     drafts.error ? h("div", { class: "notice error" },
       `${plural(drafts.error, "photo")} couldn't be extracted.`,
       h("button", { class: "button subtle inline", onclick: () => retryExtraction(batch.id) }, "Retry failed")) : null,
-    h("ul", { class: "photos" }, batch.captures.map(draftCard)),
-    batch.status === "ready" && drafts.done
+    h("ul", { class: "photos" }, batch.captures.map((capture, index) => draftCard(capture, index, { batch, canReview }))),
+    batch.status === "ready" && drafts.done && canReview
       ? h("button", { class: "button subtle", onclick: () => rerunBatch(batch) }, "Re-run extraction")
       : null,
   ];
 }
 
-function draftCard(capture) {
-  return h("li", { class: "draft" },
-    h("img", { src: capture.photo_url, loading: "lazy", alt: `Photo taken at ${fmtTime(capture.captured_at)}` }),
-    h("div", { class: "draft-body" }, draftDetails(capture, capture.draft)));
+function reviewSummary(batch, canReview) {
+  const decisions = batch.captures.map((c) => c.draft?.review.decision);
+  const report = decisions.filter((d) => d === "report").length;
+  const skip = decisions.filter((d) => d === "skip").length;
+  const undecided = decisions.length - report - skip;
+  const counts = `${report} to report · ${skip} not reporting`;
+  if (!canReview) {
+    return notice("info", `${counts} · ${undecided} undecided. Only ${batch.created_by_name || batch.created_by} can review this batch.`);
+  }
+  return h("div", { class: `notice ${undecided ? "" : "ok"}` },
+    h("div", {}, h("strong", {}, undecided ? `${plural(undecided, "draft")} to review` : "All drafts reviewed"), ` · ${counts}`),
+    undecided ? h("div", { class: "small" }, "Choose Report or Don't report for each photo. Edit anything that's wrong first.") : null,
+    report ? h("div", { class: "small" }, "Sending requests to 311 comes in the next version.") : null);
 }
 
-function draftDetails(capture, draft) {
+function draftCard(capture, index, ctx) {
+  const review = capture.draft?.review;
+  return h("li", { class: `draft ${review?.decision ?? ""}`, id: `draft-${capture.id}` },
+    h("img", {
+      src: capture.photo_url, loading: "lazy", width: capture.width, height: capture.height,
+      alt: `Photo ${index + 1}, taken at ${fmtTime(capture.captured_at)}`,
+    }),
+    h("div", { class: "draft-body" },
+      editing?.id === capture.id && ctx.canReview && review
+        ? editForm(capture)
+        : draftDetails(capture, index, ctx)));
+}
+
+function draftDetails(capture, index, ctx) {
+  const draft = capture.draft;
   const when = h("div", { class: "small muted" },
-    fmtTime(capture.captured_at),
+    `Photo ${index + 1} · ${fmtTime(capture.captured_at)}`,
     capture.lat != null ? ` · GPS ±${Math.round(capture.accuracy_m)} m` : " · no GPS");
   if (!draft) return [h("p", { class: "muted" }, "Waiting for extraction…"), when];
   if (draft.status === "pending") {
     return [h("p", { class: "muted" }, draft.error ? `Will retry: ${draft.error}` : "Extracting…"), when];
   }
 
+  const { values, edits } = draft.review;
   const rows = [];
   if (draft.status === "error") rows.push(notice("error", `Extraction failed: ${draft.error}`));
-  if (draft.status === "done") {
-    rows.push(h("div", { class: "plate-row" },
-      h("span", { class: "plate" }, draft.plate_text ?? "no plate"),
-      draft.plate_state ? h("span", { class: "muted" }, draft.plate_state) : null,
-      chip(`plate ${draft.plate_confidence}`, CONFIDENCE_KIND[draft.plate_confidence])));
-  }
+  const flags = draftFlags(capture, ctx.batch);
+  if (flags.length && ctx.batch.status === "ready") rows.push(h("ul", { class: "flags" }, flags.map((f) => h("li", {}, f))));
+
+  let plateChip = null;
+  if (edited(edits, "plate_text", "plate_state")) plateChip = chip("edited", "edited");
+  else if (draft.review.plate_checked) plateChip = chip("plate checked", "ok");
+  else if (draft.status === "done") plateChip = chip(`plate ${draft.plate_confidence}`, CONFIDENCE_KIND[draft.plate_confidence]);
+  rows.push(h("div", { class: "plate-row" },
+    h("span", { class: `plate ${draft.review.plate_needs_check && values.plate_text ? "unverified" : ""}` }, values.plate_text ?? "no plate"),
+    values.plate_state ? h("span", { class: "muted" }, values.plate_state) : null,
+    plateChip));
   rows.push(localPlateRow(draft));
   if (capture.plate_crop_url) rows.push(h("img", { class: "plate-crop", src: capture.plate_crop_url, alt: "Plate close-up" }));
-  if (draft.status === "done") {
-    const vehicle = [draft.color, draft.make, draft.model].filter(Boolean).join(" ") || "Vehicle not identified";
-    rows.push(h("div", {}, `${vehicle} `, chip(`vehicle ${draft.make_model_confidence}`, CONFIDENCE_KIND[draft.make_model_confidence])));
-  }
+
+  const vehicle = [values.color, values.make, values.model].filter(Boolean).join(" ") || "Vehicle not identified";
+  let vehicleChip = null;
+  if (edited(edits, "color", "make", "model")) vehicleChip = chip("edited", "edited");
+  else if (draft.status === "done") vehicleChip = chip(`vehicle ${draft.make_model_confidence}`, CONFIDENCE_KIND[draft.make_model_confidence]);
+  rows.push(h("div", {}, `${vehicle} `, vehicleChip));
   rows.push(addressRow(capture, draft));
   if (draft.notes) rows.push(h("div", { class: "small muted" }, draft.notes));
   rows.push(when);
+  if (ctx.canReview) rows.push(reviewControls(capture));
   return rows;
+}
+
+// Reasons to look closely before deciding. Edited fields are the reviewer's own, so they aren't flagged.
+function draftFlags(capture, batch) {
+  const draft = capture.draft;
+  const { values, edits } = draft.review;
+  const flags = [];
+  if (draft.review.plate_needs_check && values.plate_text) {
+    let why = "the local plate reader couldn't confirm it";
+    if (draft.plate_confidence && draft.plate_confidence !== "high") why = `Claude's confidence is ${draft.plate_confidence}`;
+    else if (draft.plates_agree === false) why = "the two readings differ";
+    flags.push(`Check the plate: ${why}`);
+  }
+  const twin = values.plate_text
+    ? batch.captures.findIndex((c) => c.id !== capture.id && c.draft?.review.values.plate_text === values.plate_text)
+    : -1;
+  if (twin >= 0) flags.push(`Same plate as photo ${twin + 1}`);
+  if (!edited(edits, "color", "make", "model") && draft.make_model_confidence === "low") flags.push("Check the vehicle: low confidence");
+  if (!("address" in edits) && values.address) {
+    if (capture.accuracy_m > WEAK_GPS_M) flags.push(`GPS was only ±${Math.round(capture.accuracy_m)} m: check the address`);
+    else if (draft.address_match === "StreetAddress") flags.push("Address is an estimate along the block");
+  }
+  const missing = missingFields(values);
+  if (missing.length) flags.push(`Missing ${missing.join(", ")}`);
+  return flags;
 }
 
 function localPlateRow(draft) {
@@ -476,12 +557,142 @@ function localPlateRow(draft) {
 }
 
 function addressRow(capture, draft) {
+  const { values, edits } = draft.review;
+  if ("address" in edits) {
+    return values.address
+      ? h("div", {}, `📍 ${values.address} `, chip("edited", "edited"))
+      : h("div", { class: "small warn-text" }, "No address");
+  }
   if (draft.geocode_error) return h("div", { class: "small warn-text" }, `Address lookup failed: ${draft.geocode_error}`);
   if (capture.lat == null) return h("div", { class: "small warn-text" }, "No GPS fix, so no address");
   if (!draft.address) return h("div", { class: "small warn-text" }, "No address found near the GPS fix");
   const kind = draft.address_match === "PointAddress" ? "building" : "along the block";
   return h("div", {}, `📍 ${draft.address} `,
     h("span", { class: "small muted" }, `(${kind}, ${Math.round(draft.address_distance_m)} m from GPS)`));
+}
+
+// ---- Review ----
+
+function reviewControls(capture) {
+  const { decision } = capture.draft.review;
+  const disabled = saving != null;
+  const option = (value, label) => h("button", {
+    class: `seg ${decision === value ? `on ${value}` : ""}`,
+    "aria-pressed": String(decision === value),
+    disabled,
+    onclick: () => decide(capture, decision === value ? null : value), // tapping the chosen one undoes it
+  }, label);
+  return h("div", { class: "review" },
+    h("div", { class: "segmented", role: "group", "aria-label": "Decision" },
+      option("report", "Report"), option("skip", "Don't report")),
+    h("button", { class: "button subtle", disabled, onclick: () => openEditor(capture) }, "Edit"));
+}
+
+function decide(capture, decision) {
+  const { values, plate_needs_check } = capture.draft.review;
+  // Reporting needs every field and a trusted or checked plate: open the form to get there.
+  if (decision === "report" && (plate_needs_check || missingFields(values).length)) {
+    return openEditor(capture, { reportAfter: true });
+  }
+  return saveReview(capture, { decision });
+}
+
+function openEditor(capture, { reportAfter = false } = {}) {
+  editing = { id: capture.id, values: { ...capture.draft.review.values }, plateChecked: false, reportAfter };
+  drawBatch();
+  document.getElementById(`draft-${capture.id}`)?.scrollIntoView({ block: "start" });
+}
+
+function closeEditor() {
+  const id = editing?.id;
+  editing = null;
+  drawBatch();
+  if (id) document.getElementById(`draft-${id}`)?.scrollIntoView({ block: "nearest" });
+}
+
+function editForm(capture) {
+  const draft = capture.draft;
+  const form = editing;
+  const input = (field, props = {}) => h("input", {
+    name: field, value: form.values[field] ?? "", autocomplete: "off",
+    oninput: (event) => { form.values[field] = event.target.value; },
+    ...props,
+  });
+  const field = (name, label, props) => h("label", { class: "field" }, label, input(name, props));
+  const plateInput = input("plate_text", { class: "plate-input", autocapitalize: "characters", spellcheck: "false", maxlength: 10 });
+  const readings = [["Claude", draft.plate_text], ["Local reader", draft.alpr_text]].filter(([, text]) => text);
+  const offerReadings = new Set(readings.map(([, text]) => text)).size > 1;
+  const missing = missingFields(form.values);
+
+  return [
+    h("h3", {}, form.reportAfter ? "Check before reporting" : "Edit draft"),
+    form.reportAfter && missing.length ? notice("warn", `To report, fill in: ${missing.join(", ")}`) : null,
+    capture.plate_crop_url ? h("img", { class: "plate-crop", src: capture.plate_crop_url, alt: "Plate close-up" }) : null,
+    h("label", { class: "field" }, "Plate", plateInput),
+    offerReadings ? h("div", { class: "readings" }, "Use:", readings.map(([who, text]) => h("button", {
+      type: "button", class: "reading", "aria-label": `Use ${who} reading ${text}`,
+      onclick: () => { plateInput.value = text; form.values.plate_text = text; },
+    }, `${text} (${who})`))) : null,
+    draft.review.plate_needs_check ? h("label", { class: "check" },
+      h("input", { type: "checkbox", checked: form.plateChecked, onchange: (event) => { form.plateChecked = event.target.checked; } }),
+      "The plate above matches the photo") : null,
+    h("div", { class: "field-row" },
+      field("plate_state", "State", { maxlength: 2, autocapitalize: "characters", spellcheck: "false" }),
+      field("color", "Color")),
+    h("div", { class: "field-row" }, field("make", "Make"), field("model", "Model")),
+    field("address", "Address"),
+    h("div", { class: "form-actions" },
+      h("button", { class: "button primary", disabled: saving != null, onclick: () => saveEdits(capture) },
+        saving === capture.id ? "Saving…" : form.reportAfter ? "Save & report" : "Save"),
+      h("button", { class: "button subtle", disabled: saving != null, onclick: closeEditor }, "Cancel")),
+  ];
+}
+
+async function saveEdits(capture) {
+  const form = editing;
+  const current = capture.draft.review.values;
+  const changes = {};
+  for (const [field] of FIELDS) {
+    const value = (form.values[field] ?? "").trim();
+    if (value !== (current[field] ?? "")) changes[field] = value || null;
+  }
+  if (form.plateChecked) changes.plate_checked = true;
+  if (form.reportAfter) {
+    const plateTyped = "plate_text" in changes;
+    if (capture.draft.review.plate_needs_check && !plateTyped && !form.plateChecked) {
+      return showError("Compare the plate with the photo: tick the box if it's right, or correct it.");
+    }
+    changes.decision = "report";
+  }
+  if (Object.keys(changes).length === 0) return closeEditor();
+  if (await saveReview(capture, changes)) closeEditor();
+}
+
+async function saveReview(capture, changes) {
+  const { batch } = shown;
+  saving = capture.id;
+  drawBatch();
+  try {
+    const updated = await api(
+      "PATCH",
+      `/api/batches/${encodeURIComponent(batch.id)}/captures/${encodeURIComponent(capture.id)}/draft`,
+      { json: { version: capture.draft.review.version, ...changes } },
+    );
+    batch.captures = batch.captures.map((c) => (c.id === updated.id ? updated : c));
+    return true;
+  } catch (error) {
+    if (error.status === 409) {
+      editing = null;
+      showError(`${error.message}. Showing the latest version.`);
+      renderBatch(batch.id);
+    } else {
+      showError(`Couldn't save: ${error.message}`);
+    }
+    return false;
+  } finally {
+    saving = null;
+    drawBatch();
+  }
 }
 
 async function retryExtraction(id, rerunAll = false) {
@@ -496,7 +707,9 @@ async function retryExtraction(id, rerunAll = false) {
 
 function rerunBatch(batch) {
   const estimate = batch.cost_usd ? ` (about $${batch.cost_usd.toFixed(2)} again)` : "";
-  if (confirm(`Re-run extraction for all ${plural(batch.capture_count, "photo")}? This replaces the current results and makes new API calls${estimate}.`)) {
+  const reviewed = batch.review.report + batch.review.skip;
+  const note = reviewed ? " Your edits are kept, but Report / Don't report choices are cleared." : "";
+  if (confirm(`Re-run extraction for all ${plural(batch.capture_count, "photo")}? This replaces the current results and makes new API calls${estimate}.${note}`)) {
     retryExtraction(batch.id, true);
   }
 }

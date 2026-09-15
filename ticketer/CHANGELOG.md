@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0
+
+- **Review drafts.** When a batch finishes extracting, each photo gets **Report**,
+  **Don't report** and **Edit**.
+  - **Edit** changes plate, state, color, make, model or address. The extracted values are kept;
+    changed fields show an "edited" tag.
+  - **Plate check:** a plate is trusted only when Claude says `high` and the local reader
+    matches. Any other plate has to be corrected, or ticked "matches the photo", before
+    **Report**.
+  - **Report** also needs plate, color, make, model and address.
+  - **Warnings on each draft:** plate to check, same plate twice in a batch, low-confidence
+    vehicle, weak GPS or an estimated address, and missing fields.
+  - **Stale screens:** every change bumps the draft's version, and a change made from an older
+    screen is refused. A decision always covers the exact values on screen.
+- The home screen shows how many drafts in each batch still need a decision.
+- Only the person who captured a batch can review it or re-run its extraction.
+- **Re-run extraction** keeps edits but clears Report / Don't report choices.
+- Nothing is sent to 311 yet.
+
 ## 0.3.2
 
 - Fix: after **Re-run extraction**, the phone could keep showing the old plate close-up for up to

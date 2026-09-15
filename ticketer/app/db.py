@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS batches (
@@ -81,6 +81,16 @@ CREATE TABLE IF NOT EXISTS drafts (
 CREATE INDEX IF NOT EXISTS drafts_by_status ON drafts (status, next_attempt_at);
 """
 
+# Review columns (v3), added with ALTER TABLE so databases from earlier versions upgrade in place.
+DRAFT_REVIEW_COLUMNS = {
+    "version": "INTEGER NOT NULL DEFAULT 1",  # bumped on every change a submission would send
+    "decision": "TEXT",                       # NULL (undecided) | report | skip
+    "edits": "TEXT",                          # JSON {field: value} overriding extracted values
+    "plate_checked": "INTEGER NOT NULL DEFAULT 0",  # reviewer confirmed the plate against the photo
+    "reviewed_by": "TEXT",
+    "reviewed_at": "TEXT",
+}
+
 
 class Database:
     def __init__(self, path: Path):
@@ -91,6 +101,10 @@ class Database:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(SCHEMA)
+            existing = {row["name"] for row in conn.execute("PRAGMA table_info(drafts)")}
+            for column, definition in DRAFT_REVIEW_COLUMNS.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE drafts ADD COLUMN {column} {definition}")
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @contextmanager

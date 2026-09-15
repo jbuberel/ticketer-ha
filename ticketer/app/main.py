@@ -1,28 +1,31 @@
 """Ticketer API: capture sessions (batches of GPS-tagged photos) and the drafts extracted from them."""
 
 import hashlib
+import json
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, BinaryIO
+from typing import Annotated, BinaryIO, Literal
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from .db import Database
 from .extract import ClaudeExtractor
 from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder
-from .plates import FastAlprReader
+from .plates import FastAlprReader, normalize_plate
 from .worker import Pipeline, Worker, plate_crop_path
 
 VERSION = os.environ.get("TICKETER_VERSION", "dev")
@@ -75,6 +78,50 @@ class BatchCreate(BaseModel):
     id: uuid.UUID
 
 
+class DraftUpdate(BaseModel):
+    """A review change. Only the fields sent are changed; `version` must be the draft's current one."""
+
+    model_config = ConfigDict(extra="forbid")
+    version: int
+    decision: Literal["report", "skip"] | None = None
+    plate_checked: bool | None = None
+    plate_text: str | None = None
+    plate_state: str | None = None
+    color: str | None = None
+    make: str | None = None
+    model: str | None = None
+    address: str | None = None
+
+
+EDITABLE_FIELDS = ("plate_text", "plate_state", "color", "make", "model", "address")
+REQUIRED_TO_REPORT = {"plate_text": "plate", "color": "color", "make": "make", "model": "model", "address": "address"}
+TEXT_LIMITS = {"color": 40, "make": 40, "model": 60, "address": 200}
+MAX_PLATE_LENGTH = 8
+
+
+def clean_field(field: str, value: str | None) -> str | None:
+    if field == "plate_text":
+        plate = normalize_plate(value)
+        if plate and len(plate) > MAX_PLATE_LENGTH:
+            raise HTTPException(422, f"A plate has at most {MAX_PLATE_LENGTH} letters and digits")
+        return plate
+    value = " ".join((value or "").split()) or None
+    if field == "plate_state":
+        if value and not re.fullmatch(r"[A-Za-z]{2}", value):
+            raise HTTPException(422, "State must be a 2-letter code, e.g. CA")
+        return value.upper() if value else None
+    if value and len(value) > TEXT_LIMITS[field]:
+        raise HTTPException(422, f"{field} is longer than {TEXT_LIMITS[field]} characters")
+    return value
+
+
+def plate_needs_check(extracted: Mapping, edits: dict, plate_checked: bool) -> bool:
+    """A plate is trusted only when Claude is confident and the local reader agrees. Any other plate must
+    be typed in or confirmed against the photo by the reviewer before the draft can be reported."""
+    trusted = extracted["plate_confidence"] == "high" and bool(extracted["plates_agree"])
+    return not (trusted or "plate_text" in edits or plate_checked)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -120,11 +167,14 @@ DRAFT_FIELDS = ("status", "error", "attempts", "plate_text", "plate_state", "pla
                 "model", "make_model_confidence", "notes", "extractor_model", "cost_usd", "alpr_text",
                 "alpr_confidence", "alpr_error", "plates_agree", "address", "address_full", "address_match",
                 "address_distance_m", "geocode_error", "extracted_at")
-CAPTURES_WITH_DRAFTS = (
+REVIEW_FIELDS = ("version", "decision", "edits", "plate_checked", "reviewed_by", "reviewed_at")
+CAPTURE_WITH_DRAFT_SELECT = (
     "SELECT c.*, d.capture_id AS d_capture_id, d.alpr_box AS d_alpr_box, "  # extracted_at is in DRAFT_FIELDS
-    + ", ".join(f"d.{f} AS d_{f}" for f in DRAFT_FIELDS)
-    + " FROM captures c LEFT JOIN drafts d ON d.capture_id = c.id WHERE c.batch_id = ? ORDER BY c.captured_at"
+    + ", ".join(f"d.{f} AS d_{f}" for f in DRAFT_FIELDS + REVIEW_FIELDS)
+    + " FROM captures c LEFT JOIN drafts d ON d.capture_id = c.id"
 )
+CAPTURES_WITH_DRAFTS = CAPTURE_WITH_DRAFT_SELECT + " WHERE c.batch_id = ? ORDER BY c.captured_at"
+CAPTURE_WITH_DRAFT = CAPTURE_WITH_DRAFT_SELECT + " WHERE c.batch_id = ? AND c.id = ?"
 
 
 def capture_json(row: sqlite3.Row) -> dict:
@@ -134,6 +184,18 @@ def capture_json(row: sqlite3.Row) -> dict:
         draft = {f: row[f"d_{f}"] for f in DRAFT_FIELDS}
         if draft["plates_agree"] is not None:
             draft["plates_agree"] = bool(draft["plates_agree"])
+        edits = json.loads(row["d_edits"] or "{}")
+        plate_checked = bool(row["d_plate_checked"])
+        draft["review"] = {
+            "version": row["d_version"],
+            "decision": row["d_decision"],
+            "edits": edits,
+            "values": {f: edits.get(f, draft[f]) for f in EDITABLE_FIELDS},  # what a submission would send
+            "plate_checked": plate_checked,
+            "plate_needs_check": plate_needs_check(draft, edits, plate_checked),
+            "reviewed_by": row["d_reviewed_by"],
+            "reviewed_at": row["d_reviewed_at"],
+        }
         out["draft"] = draft
         if row["d_alpr_box"]:
             # The close-up is rewritten when a draft is re-run; a new URL keeps phones from showing a cached one.
@@ -145,12 +207,16 @@ def capture_json(row: sqlite3.Row) -> dict:
 def batch_json(conn: sqlite3.Connection, row: sqlite3.Row, with_captures: bool = False) -> dict:
     captures = conn.execute(CAPTURES_WITH_DRAFTS, (row["id"],)).fetchall()
     counts = {"pending": 0, "done": 0, "error": 0}
+    review = {"report": 0, "skip": 0, "undecided": 0}
     cost = 0.0
     for capture in captures:
         if capture["d_status"] in counts:
             counts[capture["d_status"]] += 1
+        if capture["d_status"] in ("done", "error"):
+            review[capture["d_decision"] or "undecided"] += 1
         cost += capture["d_cost_usd"] or 0.0
-    out = dict(row) | {"capture_count": len(captures), "drafts": counts, "cost_usd": round(cost, 4)}
+    out = dict(row) | {"capture_count": len(captures), "drafts": counts, "review": review,
+                       "cost_usd": round(cost, 4)}
     if with_captures:
         out["captures"] = [capture_json(c) for c in captures]
     return out
@@ -349,10 +415,55 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     def retry_extraction(batch_id: uuid.UUID, user: CurrentUser, rerun_all: bool = False) -> dict:
         """Run extraction again for photos whose extraction failed, or for every photo (rerun_all)."""
         with db.connect() as conn:
-            get_batch(conn, batch_id)
+            require_owner(get_batch(conn, batch_id), user)  # clears review decisions
         worker.retry(str(batch_id), include_done=rerun_all)
         with db.connect() as conn:
             return batch_json(conn, get_batch(conn, batch_id), with_captures=True)
+
+    @app.patch("/api/batches/{batch_id}/captures/{capture_id}/draft")
+    def review_draft(batch_id: uuid.UUID, capture_id: uuid.UUID, body: DraftUpdate, user: CurrentUser) -> dict:
+        """Edit a draft's fields, confirm its plate, or decide report/skip. A stale `version` gets 409,
+        so a decision always applies to the exact values the reviewer was looking at."""
+        changes = {f: clean_field(f, getattr(body, f)) for f in EDITABLE_FIELDS if f in body.model_fields_set}
+        with db.connect(immediate=True) as conn:
+            batch = get_batch(conn, batch_id)
+            require_owner(batch, user)
+            row = conn.execute(CAPTURE_WITH_DRAFT, (str(batch_id), str(capture_id))).fetchone()
+            if row is None or not row["d_capture_id"]:
+                raise HTTPException(404, "Draft not found")
+            if batch["status"] != "ready":
+                raise HTTPException(409, "Drafts can be reviewed once extraction has finished")
+            if body.version != row["d_version"]:
+                raise HTTPException(409, "This draft changed since it was loaded")
+
+            extracted = {f: row[f"d_{f}"] for f in DRAFT_FIELDS}
+            old = (json.loads(row["d_edits"] or "{}"), row["d_decision"], bool(row["d_plate_checked"]))
+            edits = dict(old[0])
+            for field, value in changes.items():
+                if value == extracted[field]:
+                    edits.pop(field, None)  # set back to what extraction found
+                else:
+                    edits[field] = value
+            decision = body.decision if "decision" in body.model_fields_set else old[1]
+            plate_checked = bool(body.plate_checked) if "plate_checked" in body.model_fields_set else old[2]
+
+            if decision == "report":
+                values = {f: edits.get(f, extracted[f]) for f in EDITABLE_FIELDS}
+                missing = [label for f, label in REQUIRED_TO_REPORT.items() if not values[f]]
+                if missing:
+                    raise HTTPException(422, f"To report, fill in: {', '.join(missing)}")
+                if plate_needs_check(extracted, edits, plate_checked):
+                    raise HTTPException(422, "Check the plate against the photo before reporting")
+
+            if (edits, decision, plate_checked) != old:
+                conn.execute(
+                    "UPDATE drafts SET edits = ?, decision = ?, plate_checked = ?, version = version + 1,"
+                    " reviewed_by = ?, reviewed_at = ? WHERE capture_id = ?",
+                    (json.dumps(edits) if edits else None, decision, int(plate_checked), user.login, utc_now(),
+                     str(capture_id)),
+                )
+                row = conn.execute(CAPTURE_WITH_DRAFT, (str(batch_id), str(capture_id))).fetchone()
+            return capture_json(row)
 
     @app.get("/api/batches/{batch_id}/captures/{capture_id}/photo")
     def capture_photo(batch_id: uuid.UUID, capture_id: uuid.UUID, user: CurrentUser) -> FileResponse:

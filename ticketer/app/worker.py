@@ -128,12 +128,15 @@ class Worker:
         return True
 
     def retry(self, batch_id: str, include_done: bool = False) -> int:
-        """Queue a batch's failed drafts (or all of them) to run again. Returns how many."""
+        """Queue a batch's failed drafts (or all of them) to run again. Returns how many.
+        Reviewer edits are kept, but report/skip decisions and plate checks are cleared: they were
+        made against the old results."""
         statuses = ("error", "done") if include_done else ("error",)
         reset = ", ".join(f"{column} = NULL" for column in RESULT_COLUMNS)
         with self.db.connect(immediate=True) as conn:
             changed = conn.execute(
-                f"UPDATE drafts SET status = 'pending', attempts = 0, next_attempt_at = NULL, {reset}"
+                f"UPDATE drafts SET status = 'pending', attempts = 0, next_attempt_at = NULL, {reset},"
+                " decision = NULL, plate_checked = 0, version = version + 1"
                 f" WHERE batch_id = ? AND status IN ({', '.join('?' for _ in statuses)})",
                 (batch_id, *statuses),
             ).rowcount
@@ -235,5 +238,6 @@ class Worker:
                                        "extracted_at": utc_iso(), "next_attempt_at": None}
         assignments = ", ".join(f"{column} = ?" for column in values)  # column names come from this module
         with self.db.connect() as conn:
-            conn.execute(f"UPDATE drafts SET {assignments}, attempts = attempts + 1 WHERE capture_id = ?",
+            conn.execute(f"UPDATE drafts SET {assignments}, attempts = attempts + 1, version = version + 1"
+                         " WHERE capture_id = ?",
                          (*values.values(), capture_id))
