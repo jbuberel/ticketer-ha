@@ -153,6 +153,35 @@ def test_rerun_keeps_edits_but_clears_decisions(make_client):
     assert batch["review"] == {"report": 0, "skip": 0, "undecided": 1}
 
 
+def test_deleting_a_reviewed_batch_removes_everything(make_client, tmp_path):
+    with make_client(FakeExtractor(extraction(), extraction())) as client:
+        batch_id, capture = extracted_capture(client)
+        assert review(client, batch_id, capture, decision="report").status_code == 200
+        batch_dir = tmp_path / "photos" / batch_id
+        assert sorted(p.suffix for p in batch_dir.iterdir()) == [".jpg", ".jpg"]  # photo and plate close-up
+
+        other_id, _ = extracted_capture(client)
+        url = f"/api/batches/{batch_id}"
+        assert client.delete(url, headers=BOB).status_code == 403
+        assert client.delete(url, headers=ALICE).status_code == 204
+        assert client.delete(url, headers=ALICE).status_code == 204  # retry-safe
+
+        assert client.get(url, headers=ALICE).status_code == 404
+        assert not batch_dir.exists()
+        with client.app.state.db.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM drafts WHERE batch_id = ?", (batch_id,)).fetchone()[0] == 0
+        assert [b["id"] for b in client.get("/api/batches", headers=ALICE).json()["batches"]] == [other_id]
+
+
+def test_deleting_a_queued_batch_stops_its_extraction(make_client):
+    extractor = FakeExtractor(extraction())
+    with make_client(extractor) as client:
+        batch_id, _ = queued_batch(client)
+        assert client.delete(f"/api/batches/{batch_id}", headers=ALICE).status_code == 204
+        assert client.app.state.worker.run_once() is False
+    assert extractor.calls == 0
+
+
 def test_older_database_gains_review_columns(tmp_path):
     path = tmp_path / "ticketer.db"
     conn = sqlite3.connect(path)

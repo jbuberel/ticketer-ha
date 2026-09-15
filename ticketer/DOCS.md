@@ -78,6 +78,8 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
    - Only the person who captured a batch can review it.
 
 To take out a bad shot, tap **✕** on it; **Discard session** throws the whole session away.
+To get rid of a finished batch, for example test photos, open it and tap **Delete batch** at the
+bottom. This permanently removes its photos, close-ups and drafts from the server.
 If the app is closed or the page reloads mid-session, reopening it resumes the session.
 
 ## Your data

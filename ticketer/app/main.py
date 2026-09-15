@@ -309,15 +309,15 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
 
     @app.delete("/api/batches/{batch_id}", status_code=204)
     def discard_batch(batch_id: uuid.UUID, user: CurrentUser) -> None:
-        """Discard an unfinished session and its photos. Deleting a missing batch succeeds."""
-        with db.connect() as conn:
+        """Delete a batch with its photos, close-ups and drafts, in any state. Deleting a missing batch
+        succeeds. If the worker is mid-photo, its result finds no draft row and is dropped."""
+        with db.connect(immediate=True) as conn:
             try:
                 batch = get_batch(conn, batch_id)
             except HTTPException:
                 return
             require_owner(batch, user)
-            require_capturing(batch)
-            conn.execute("DELETE FROM batches WHERE id = ?", (str(batch_id),))
+            conn.execute("DELETE FROM batches WHERE id = ?", (str(batch_id),))  # captures and drafts cascade
         shutil.rmtree(photos_dir / str(batch_id), ignore_errors=True)
 
     @app.put("/api/batches/{batch_id}/captures/{capture_id}", status_code=201)

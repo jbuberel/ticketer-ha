@@ -157,7 +157,6 @@ def test_process_closes_the_batch(client):
     assert upload(client, batch_id)[1].status_code == 409  # no new photos
     assert upload(client, batch_id, capture_id, photo=photo)[1].status_code == 200  # lost response retried
     assert client.delete(f"/api/batches/{batch_id}/captures/{capture_id}", headers=ALICE).status_code == 409
-    assert client.delete(f"/api/batches/{batch_id}", headers=ALICE).status_code == 409
 
 
 def test_discard_batch_removes_photos(client, settings):

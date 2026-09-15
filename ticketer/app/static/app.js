@@ -453,7 +453,26 @@ function batchContent(batch, me) {
     batch.status === "ready" && drafts.done && canReview
       ? h("button", { class: "button subtle", onclick: () => rerunBatch(batch) }, "Re-run extraction")
       : null,
+    // An open capture session is discarded from the phone that started it instead.
+    batch.status !== "capturing" && me.user_login === batch.created_by
+      ? h("button", { class: "button danger", onclick: () => deleteBatch(batch) }, "Delete batch")
+      : null,
   ];
+}
+
+async function deleteBatch(batch) {
+  const decided = batch.review.report + batch.review.skip;
+  const reviewed = decided ? ` and your review of ${plural(decided, "draft")}` : "";
+  if (!confirm(`Delete this batch? Its ${plural(batch.capture_count, "photo")}, plate close-ups and drafts${reviewed} are removed from the server. This can't be undone.`)) return;
+  try {
+    await api("DELETE", `/api/batches/${encodeURIComponent(batch.id)}`);
+  } catch (error) {
+    return showError(`Couldn't delete the batch: ${error.message}`);
+  }
+  clearTimeout(batchTimer);
+  shown = null;
+  editing = null;
+  navigate("#/");
 }
 
 function reviewSummary(batch, canReview) {

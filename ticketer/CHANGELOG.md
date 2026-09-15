@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- **Delete batch**, at the bottom of a batch, permanently removes the batch, its photos, plate
+  close-ups and drafts. It works in any state after capture ends, including while extraction is
+  still running. Only the person who captured the batch can delete it.
+
 ## 0.4.0
 
 - **Review drafts.** When a batch finishes extracting, each photo gets **Report**,
