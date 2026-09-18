@@ -3,8 +3,10 @@
 //
 // Stores:
 //   kv        "session" -> { batchId, startedAt, batchCreated }
-//   captures  { id, batchId, capturedAt, fix, state, error, retryable, thumb }
-//             state: locating | queued | uploading | uploaded | failed
+//   captures  { id, batchId, capturedAt, fix, address, candidates, state, error, retryable, thumb }
+//             state: locating | geocoding | queued | uploading | uploaded | failed
+//             address: { address, full, source, match } settled on the street, or null
+//             candidates: nearby addresses to choose from, for the picker
 //   photos    capture id -> { data: ArrayBuffer, type }  (kept apart so listing captures stays cheap)
 
 const DB_NAME = "ticketer";
@@ -81,13 +83,16 @@ export const removeCapture = (id) => tx(["captures", "photos"], "readwrite", (t)
   t.objectStore("photos").delete(id);
 });
 
-// After a reload, nothing is mid-upload or waiting on a GPS callback any more.
+// After a reload, nothing is mid-upload or waiting on a GPS or address callback any more. A photo
+// caught mid-lookup uploads without an address; extraction falls back to geocoding its GPS fix.
+const INTERRUPTED = ["uploading", "locating", "geocoding"];
+
 export const recoverInterrupted = (batchId) => tx("captures", "readwrite", (t) => {
   const captures = t.objectStore("captures");
   const r = captures.index("batchId").getAll(batchId);
   r.onsuccess = () => {
     for (const c of r.result) {
-      if (c.state === "uploading" || c.state === "locating") captures.put({ ...c, state: "queued" });
+      if (INTERRUPTED.includes(c.state)) captures.put({ ...c, state: "queued" });
     }
   };
 });

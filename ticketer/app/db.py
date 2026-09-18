@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS batches (
@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS drafts (
 CREATE INDEX IF NOT EXISTS drafts_by_status ON drafts (status, next_attempt_at);
 """
 
+# Address columns on captures (v4), settled on the phone while the photo is taken so the address
+# doesn't have to be remembered back home. When set, the extraction worker uses these instead of
+# reverse geocoding the GPS fix. address_full and address_match describe the geocoder's match, so
+# they are only filled in while the address is still the one it returned.
+CAPTURE_ADDRESS_COLUMNS = {
+    "address": "TEXT",
+    "address_full": "TEXT",
+    "address_source": "TEXT",  # geocoded (accepted as looked up) | picked (a neighbour) | typed
+    "address_match": "TEXT",   # PointAddress | StreetAddress
+}
+
 # Review columns (v3), added with ALTER TABLE so databases from earlier versions upgrade in place.
 DRAFT_REVIEW_COLUMNS = {
     "version": "INTEGER NOT NULL DEFAULT 1",  # bumped on every change a submission would send
@@ -101,10 +112,11 @@ class Database:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(SCHEMA)
-            existing = {row["name"] for row in conn.execute("PRAGMA table_info(drafts)")}
-            for column, definition in DRAFT_REVIEW_COLUMNS.items():
-                if column not in existing:
-                    conn.execute(f"ALTER TABLE drafts ADD COLUMN {column} {definition}")
+            for table, columns in (("drafts", DRAFT_REVIEW_COLUMNS), ("captures", CAPTURE_ADDRESS_COLUMNS)):
+                existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+                for column, definition in columns.items():
+                    if column not in existing:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @contextmanager

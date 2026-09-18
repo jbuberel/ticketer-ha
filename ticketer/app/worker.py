@@ -105,7 +105,8 @@ class Worker:
                 )
                 conn.execute("UPDATE batches SET status = 'processing' WHERE id = ?", (batch["id"],))
             row = conn.execute(
-                "SELECT d.capture_id, d.attempts, c.photo_path, c.lat, c.lon"
+                "SELECT d.capture_id, d.attempts, c.photo_path, c.lat, c.lon,"
+                " c.address, c.address_full, c.address_match"
                 " FROM drafts d JOIN captures c ON c.id = d.capture_id JOIN batches b ON b.id = d.batch_id"
                 " WHERE d.status = 'pending' AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= ?)"
                 " ORDER BY b.created_at, c.captured_at LIMIT 1",
@@ -162,7 +163,13 @@ class Worker:
                 log.exception("plate reader failed for capture %s", capture_id)
                 fields["alpr_error"] = str(e)
 
-        if self.pipeline.geocoder and row["lat"] is not None:
+        if row["address"]:
+            # Settled on the phone in front of the house, which beats anything a fix can be
+            # resolved to afterwards. address_lat/lon/distance_m stay empty: they described the
+            # geocoder's own match, and this address may not be it.
+            fields |= {"address": row["address"], "address_full": row["address_full"] or row["address"],
+                       "address_match": row["address_match"]}
+        elif self.pipeline.geocoder and row["lat"] is not None:
             try:
                 address = self.pipeline.geocoder.reverse(row["lat"], row["lon"])
                 if address:

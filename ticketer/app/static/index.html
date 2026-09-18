@@ -67,6 +67,25 @@
       background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 8px;
     }
     .shot img, .shot .thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; background: var(--subtle); }
+    .chip.geocoding { background: var(--warn-bg); color: var(--warn); }
+    .address {
+      display: flex; gap: 6px; align-items: baseline; width: 100%; margin: 2px 0;
+      font: inherit; font-size: 0.95rem; text-align: left; color: var(--text);
+      background: transparent; border: 0; border-bottom: 1px dashed var(--border);
+      padding: 2px 0; cursor: pointer; -webkit-tap-highlight-color: transparent;
+    }
+    .address.none { color: var(--warn); }
+    .address .pencil { color: var(--muted); font-size: 0.85rem; }
+    .address:disabled { opacity: 0.5; }
+    .shot.picking { display: block; }
+    .picker { display: grid; gap: 10px; padding: 2px; }
+    .options { display: grid; gap: 6px; }
+    .option {
+      font: inherit; font-weight: 600; text-align: left; padding: 12px 14px; cursor: pointer;
+      border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .option.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
     .icon {
       width: 44px; height: 44px; border: 0; border-radius: 10px; background: transparent;
       color: var(--muted); font-size: 1.1rem; cursor: pointer;

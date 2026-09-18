@@ -14,6 +14,7 @@ let fix = null; // latest { lat, lon, accuracy, heading, speed, at }
 let fixError = null;
 let watchId = null;
 let busy = null; // status text while stopping or discarding a session
+let picking = null; // { id, candidates, typed } while the address picker is open on a shot
 
 // ---- DOM helpers ----
 
@@ -102,6 +103,17 @@ function freshFix() {
   });
 }
 
+// The address for a fix, looked up now rather than during extraction, so it can be checked
+// against the house actually being stood in front of.
+async function lookupAddress(fix) {
+  try {
+    const found = await api("GET", `/api/geocode?lat=${fix.lat}&lon=${fix.lon}`);
+    return found.address ? found : null;
+  } catch {
+    return null; // extraction geocodes the fix again later, so this only costs the check
+  }
+}
+
 function renderGps() {
   const el = document.getElementById("gps");
   if (!el) return;
@@ -168,6 +180,7 @@ async function beginCapture() {
 // so the file input is never replaced while the camera is open.
 async function renderCapture(session) {
   view.dataset.view = "capture";
+  picking = null;
   if (watchId == null) startGps();
   view.replaceChildren(
     h("header", {}, h("h1", {}, "Capturing"), h("p", { class: "muted" }, `Started ${fmtTime(session.startedAt)}`)),
@@ -182,7 +195,9 @@ async function renderCapture(session) {
   await updateCapture(session);
 }
 
-async function updateCapture(session) {
+// Background updates (an upload finishing) leave an open picker alone: redrawing the list would
+// take the keyboard focus out of its text field. Opening and closing it ask for the redraw.
+async function updateCapture(session, { redrawShots = !picking } = {}) {
   if (view.dataset.view !== "capture") return;
   const captures = (await store.capturesFor(session.batchId))
     .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
@@ -192,7 +207,7 @@ async function updateCapture(session) {
   document.getElementById("count").textContent = captures.length
     ? `${plural(captures.length, "photo")} · ${uploaded} uploaded`
     : "No photos yet. Snap each vehicle as you walk.";
-  document.getElementById("shots").replaceChildren(...captures.map((c) => shotItem(session, c)));
+  if (redrawShots) document.getElementById("shots").replaceChildren(...captures.map((c) => shotItem(session, c)));
   document.getElementById("actions").replaceChildren(
     busy ? h("p", { class: "muted" }, busy) : "",
     h("button", { class: "button primary", disabled: busy != null, onclick: () => stopAndProcess(session) }, "Stop Capture & Process"),
@@ -202,13 +217,17 @@ async function updateCapture(session) {
 
 const STATE_LABEL = {
   locating: "getting location",
+  geocoding: "finding address",
   queued: "waiting to upload",
   uploading: "uploading",
   uploaded: "uploaded",
   failed: "upload failed",
 };
 
+const LOOKING_UP = ["locating", "geocoding"];
+
 function shotItem(session, capture) {
+  if (picking?.id === capture.id) return addressPicker(session, capture);
   let where = "no location";
   if (capture.state === "locating") where = "getting location…";
   else if (capture.fix) {
@@ -216,18 +235,84 @@ function shotItem(session, capture) {
     where = `±${Math.round(capture.fix.accuracy)} m${age > 15 ? ` · fix ${age} s old` : ""}`;
   }
   const weak = !capture.fix || capture.fix.accuracy > 25;
-  return h("li", { class: "shot" },
+  return h("li", { class: "shot", id: `shot-${capture.id}` },
     capture.thumb ? h("img", { src: thumbUrl(capture), alt: "" }) : h("div", { class: "thumb" }),
     h("div", { class: "meta" },
       h("div", {}, fmtTime(capture.capturedAt), " ", chip(STATE_LABEL[capture.state], capture.state)),
+      shotAddress(session, capture),
       h("div", { class: `small ${weak && capture.state !== "locating" ? "warn-text" : "muted"}` }, where),
       capture.error ? h("div", { class: "small error-text" }, capture.error) : null),
     h("button", {
       class: "icon",
       "aria-label": "Remove photo",
-      disabled: busy != null || capture.state === "uploading" || capture.state === "locating",
+      disabled: busy != null || capture.state === "uploading" || LOOKING_UP.includes(capture.state),
       onclick: () => removeShot(session, capture),
     }, "✕"));
+}
+
+// The looked-up address stands as-is; tapping it opens the picker for the times it's a door or
+// two off. Locked while the photo is on the wire, so an edit can't race its own upload.
+function shotAddress(session, capture) {
+  if (LOOKING_UP.includes(capture.state)) return h("div", { class: "small muted" }, "finding address…");
+  const known = capture.address?.address;
+  return h("button", {
+    class: `address ${known ? "" : "none"}`,
+    disabled: busy != null || capture.state === "uploading",
+    onclick: () => openPicker(session, capture),
+  }, known ?? "No address — tap to set", h("span", { class: "pencil", "aria-hidden": "true" }, "✎"));
+}
+
+function openPicker(session, capture) {
+  picking = { id: capture.id, candidates: capture.candidates ?? [], typed: capture.address?.address ?? "" };
+  updateCapture(session, { redrawShots: true }).then(() => {
+    document.getElementById(`shot-${capture.id}`)?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function closePicker(session) {
+  picking = null;
+  return updateCapture(session, { redrawShots: true });
+}
+
+function addressPicker(session, capture) {
+  const chosen = capture.address?.address;
+  const typedInput = h("input", {
+    value: picking.typed, autocomplete: "off", placeholder: "e.g. 1200 Example St",
+    "aria-label": "A different address",
+    oninput: (event) => { picking.typed = event.target.value; },
+  });
+  return h("li", { class: "shot picking", id: `shot-${capture.id}` },
+    h("div", { class: "picker" },
+      h("div", { class: "small muted" }, `Photo at ${fmtTime(capture.capturedAt)} — which address?`),
+      picking.candidates.length
+        ? h("div", { class: "options" }, picking.candidates.map((option) => h("button", {
+          class: `option ${option === chosen ? "on" : ""}`,
+          "aria-pressed": String(option === chosen),
+          onclick: () => setShotAddress(session, capture, option, "picked"),
+        }, option)))
+        : h("p", { class: "small muted" }, "No addresses were found near this photo."),
+      h("label", { class: "field" }, "Something else", typedInput),
+      h("div", { class: "form-actions" },
+        h("button", { class: "button primary", onclick: () => setShotAddress(session, capture, typedInput.value, "typed") }, "Use this"),
+        h("button", { class: "button subtle", onclick: () => closePicker(session) }, "Cancel"))));
+}
+
+// An uploaded photo is corrected on the server; one still waiting carries the new address up with it.
+async function setShotAddress(session, capture, value, source) {
+  const address = (value ?? "").trim();
+  if (!address) return showError("Pick an address from the list, or type one in.");
+  if (address === capture.address?.address) return closePicker(session);
+  if (capture.state === "uploaded") {
+    try {
+      await api("PATCH", `/api/batches/${session.batchId}/captures/${capture.id}`,
+        { json: { address, address_source: source } });
+    } catch (error) {
+      return showError(`Couldn't save the address: ${error.message}`);
+    }
+  }
+  // full and match described the geocoder's own match, which this no longer is.
+  await store.updateCapture(capture.id, { address: { address, full: null, source, match: null } });
+  await closePicker(session);
 }
 
 function thumbUrl(capture) {
@@ -273,15 +358,30 @@ async function onSnap(session, input) {
       batchId: session.batchId,
       capturedAt,
       fix: haveFix ? fix : null,
-      state: haveFix ? "queued" : "locating",
+      address: null,
+      candidates: [],
+      state: haveFix ? "geocoding" : "locating",
       error: null,
       thumb,
     };
     await store.addCapture(capture, { data, type: file.type || "image/jpeg" });
     await updateCapture(session);
+
+    let located = capture.fix;
     if (!haveFix) {
-      const located = await freshFix();
-      await store.updateCapture(capture.id, { fix: located, state: "queued" });
+      located = await freshFix();
+      await store.updateCapture(capture.id, { fix: located, state: located ? "geocoding" : "queued" });
+      await updateCapture(session);
+    }
+    // Looking the address up now, while the phone is still in front of the house, is the whole
+    // point: a batch reviewed hours later can't say which one it was.
+    if (located) {
+      const found = await lookupAddress(located);
+      await store.updateCapture(capture.id, {
+        address: found && { address: found.address, full: found.address_full, source: "geocoded", match: found.address_match },
+        candidates: found?.candidates ?? [],
+        state: "queued",
+      });
       await updateCapture(session);
     }
     startUploads(onUploadChange);
@@ -558,7 +658,8 @@ function draftFlags(capture, batch) {
     : -1;
   if (twin >= 0) flags.push(`Same plate as photo ${twin + 1}`);
   if (!edited(edits, "color", "make", "model") && draft.make_model_confidence === "low") flags.push("Check the vehicle: low confidence");
-  if (!("address" in edits) && values.address) {
+  const settledOnTheStreet = capture.address_source === "picked" || capture.address_source === "typed";
+  if (!("address" in edits) && values.address && !settledOnTheStreet) {
     if (capture.accuracy_m > WEAK_GPS_M) flags.push(`GPS was only ±${Math.round(capture.accuracy_m)} m: check the address`);
     else if (draft.address_match === "StreetAddress") flags.push("Address is an estimate along the block");
   }
@@ -575,19 +676,29 @@ function localPlateRow(draft) {
     `Local plate reader: ${draft.alpr_text}${verdict}`);
 }
 
+const ADDRESS_SOURCE = {
+  geocoded: "looked up while capturing",
+  picked: "chosen on the street",
+  typed: "typed on the street",
+};
+
 function addressRow(capture, draft) {
   const { values, edits } = draft.review;
-  if ("address" in edits) {
-    return values.address
-      ? h("div", {}, `📍 ${values.address} `, chip("edited", "edited"))
-      : h("div", { class: "small warn-text" }, "No address");
+  if (!values.address) {
+    if ("address" in edits) return h("div", { class: "small warn-text" }, "No address");
+    if (draft.geocode_error) return h("div", { class: "small warn-text" }, `Address lookup failed: ${draft.geocode_error}`);
+    if (capture.lat == null) return h("div", { class: "small warn-text" }, "No GPS fix, so no address");
+    return h("div", { class: "small warn-text" }, "No address found near the GPS fix");
   }
-  if (draft.geocode_error) return h("div", { class: "small warn-text" }, `Address lookup failed: ${draft.geocode_error}`);
-  if (capture.lat == null) return h("div", { class: "small warn-text" }, "No GPS fix, so no address");
-  if (!draft.address) return h("div", { class: "small warn-text" }, "No address found near the GPS fix");
-  const kind = draft.address_match === "PointAddress" ? "building" : "along the block";
-  return h("div", {}, `📍 ${draft.address} `,
-    h("span", { class: "small muted" }, `(${kind}, ${Math.round(draft.address_distance_m)} m from GPS)`));
+  let note;
+  if ("address" in edits) note = chip("edited", "edited");
+  else if (capture.address_source) note = h("span", { class: "small muted" }, `(${ADDRESS_SOURCE[capture.address_source]})`);
+  else {
+    const kind = draft.address_match === "PointAddress" ? "building" : "along the block";
+    const how = draft.address_distance_m == null ? kind : `${kind}, ${Math.round(draft.address_distance_m)} m from GPS`;
+    note = h("span", { class: "small muted" }, `(${how})`);
+  }
+  return h("div", {}, `📍 ${values.address} `, note);
 }
 
 // ---- Review ----

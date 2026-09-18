@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0
+
+- **The address is worked out as each photo is taken**, not hours later during extraction. It
+  appears on the photo in the list within a second or two of the snap, while you're still in
+  front of the house.
+  - The address stands as looked up. Tap it only when it's wrong: the picker offers the
+    neighbouring house numbers on the same side of the street, plus a box for anything else.
+  - You can still correct a photo's address later in the session, including one already
+    uploaded.
+  - If the lookup fails — no signal, or nothing found near the fix — the photo uploads without
+    one and extraction geocodes the GPS fix as before.
+- A draft says where its address came from: **looked up while capturing**, **chosen on the
+  street** or **typed on the street**.
+- An address you settled on the street is no longer flagged as an estimate or as weak GPS; you
+  were standing there.
+- Addresses can still be changed on the draft during review, as before.
+
 ## 0.4.1
 
 - **Delete batch**, at the bottom of a batch, permanently removes the batch, its photos, plate

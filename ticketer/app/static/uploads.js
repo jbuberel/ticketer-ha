@@ -101,5 +101,13 @@ function captureForm(capture, photo) {
     if (fix.speed != null) form.append("speed_mps", fix.speed);
     form.append("fix_at", new Date(fix.at).toISOString());
   }
+  const address = capture.address;
+  if (address?.address) {
+    form.append("address", address.address);
+    form.append("address_source", address.source);
+    // Only meaningful while the address is still the one the geocoder returned.
+    if (address.full) form.append("address_full", address.full);
+    if (address.match) form.append("address_match", address.match);
+  }
   return form;
 }

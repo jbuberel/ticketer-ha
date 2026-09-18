@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, BinaryIO, Literal
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .db import Database
 from .extract import ClaudeExtractor
-from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder
+from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder, GeocodeError, nearby_addresses
 from .plates import FastAlprReader, normalize_plate
 from .worker import Pipeline, Worker, plate_crop_path
 
@@ -74,6 +74,11 @@ class User:
     name: str | None
 
 
+# How a capture's address was settled on the phone: accepted as looked up, a neighbour picked off
+# the list, or typed in.
+AddressSource = Literal["geocoded", "picked", "typed"]
+
+
 class BatchCreate(BaseModel):
     id: uuid.UUID
 
@@ -91,6 +96,14 @@ class DraftUpdate(BaseModel):
     make: str | None = None
     model: str | None = None
     address: str | None = None
+
+
+class CaptureAddressUpdate(BaseModel):
+    """A new address for a photo, chosen on the phone after the capture was already uploaded."""
+
+    model_config = ConfigDict(extra="forbid")
+    address: str | None
+    address_source: AddressSource
 
 
 EDITABLE_FIELDS = ("plate_text", "plate_state", "color", "make", "model", "address")
@@ -113,6 +126,15 @@ def clean_field(field: str, value: str | None) -> str | None:
     if value and len(value) > TEXT_LIMITS[field]:
         raise HTTPException(422, f"{field} is longer than {TEXT_LIMITS[field]} characters")
     return value
+
+
+def capture_address(address: str | None, source: str | None, full: str | None,
+                    match: str | None) -> tuple[str | None, str | None, str | None, str | None]:
+    """The four address columns to store. Once the address is no longer the one the geocoder
+    returned, its match line and match type no longer describe it, so they are dropped."""
+    if address is None or source != "geocoded":
+        return address, source, None, None
+    return address, source, " ".join((full or "").split()) or None, match
 
 
 def plate_needs_check(extracted: Mapping, edits: dict, plate_checked: bool) -> bool:
@@ -162,7 +184,8 @@ def inspect_image(path: Path) -> tuple[str, int, int]:
 
 
 CAPTURE_FIELDS = ("id", "captured_at", "lat", "lon", "accuracy_m", "heading", "speed_mps", "fix_at",
-                  "width", "height", "bytes", "content_type", "received_at")
+                  "width", "height", "bytes", "content_type", "received_at",
+                  "address", "address_full", "address_source", "address_match")
 DRAFT_FIELDS = ("status", "error", "attempts", "plate_text", "plate_state", "plate_confidence", "color", "make",
                 "model", "make_model_confidence", "notes", "extractor_model", "cost_usd", "alpr_text",
                 "alpr_confidence", "alpr_error", "plates_agree", "address", "address_full", "address_match",
@@ -243,7 +266,8 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     settings = settings or Settings.from_env()
     db = Database(settings.data_dir / "ticketer.db")
     photos_dir = settings.data_dir / "photos"
-    worker = Worker(db, settings.data_dir, pipeline or default_pipeline(settings))
+    pipeline = pipeline or default_pipeline(settings)
+    worker = Worker(db, settings.data_dir, pipeline)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -277,6 +301,26 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     def whoami(user: CurrentUser) -> dict:
         return {"version": VERSION, "server_time": utc_now(), "user_login": user.login,
                 "user_name": user.name, "extraction_enabled": worker.extraction_enabled}
+
+    @app.get("/api/geocode")
+    def reverse_geocode(
+        user: CurrentUser,
+        lat: Annotated[float, Query(ge=-90, le=90)],
+        lon: Annotated[float, Query(ge=-180, le=180)],
+    ) -> dict:
+        """The address nearest a GPS fix, with its neighbours to choose from. The capture screen
+        calls this per photo, so the address is settled while the phone is still in front of the
+        house rather than from memory hours later."""
+        if pipeline.geocoder is None:
+            raise HTTPException(503, "No geocoder is configured")
+        try:
+            address = pipeline.geocoder.reverse(lat, lon)
+        except GeocodeError as e:
+            raise HTTPException(502, str(e)) from e
+        if address is None:
+            return {"address": None, "candidates": []}
+        return {"address": address.street, "address_full": address.full, "address_match": address.match_type,
+                "address_distance_m": address.distance_m, "candidates": nearby_addresses(address.street)}
 
     @app.post("/api/batches", status_code=201)
     def create_batch(body: BatchCreate, user: CurrentUser, response: Response) -> dict:
@@ -334,10 +378,18 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         heading: Annotated[float | None, Form(ge=0, le=360)] = None,
         speed_mps: Annotated[float | None, Form(ge=0)] = None,
         fix_at: Annotated[datetime | None, Form()] = None,
+        address: Annotated[str | None, Form()] = None,
+        address_source: Annotated[AddressSource | None, Form()] = None,
+        address_full: Annotated[str | None, Form()] = None,
+        address_match: Annotated[str | None, Form()] = None,
     ) -> dict:
-        """Store one photo with the phone's GPS fix. Re-sending the same photo is safe."""
+        """Store one photo with the phone's GPS fix and the address settled on the street.
+        Re-sending the same photo is safe."""
         if (lat is None) != (lon is None):
             raise HTTPException(422, "lat and lon must be sent together")
+        address = clean_field("address", address)
+        if (address is None) != (address_source is None):
+            raise HTTPException(422, "address and address_source must be sent together")
         with db.connect() as conn:
             require_owner(get_batch(conn, batch_id), user)
 
@@ -364,16 +416,39 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                 conn.execute(
                     "INSERT INTO captures (id, batch_id, photo_path, content_type, bytes, sha256,"
                     " width, height, captured_at, lat, lon, accuracy_m, heading, speed_mps, fix_at,"
-                    " received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " received_at, address, address_source, address_full, address_match)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (str(capture_id), str(batch_id), photo_path, content_type, size, sha256,
                      width, height, to_utc(captured_at), lat, lon, accuracy_m, heading, speed_mps,
-                     to_utc(fix_at) if fix_at else None, utc_now()),
+                     to_utc(fix_at) if fix_at else None, utc_now(),
+                     *capture_address(address, address_source, address_full, address_match)),
                 )
                 os.replace(tmp, settings.data_dir / photo_path)  # after the insert, so a failed insert leaves no file
                 row = conn.execute("SELECT * FROM captures WHERE id = ?", (str(capture_id),)).fetchone()
                 return capture_json(row)
         finally:
             tmp.unlink(missing_ok=True)
+
+    @app.patch("/api/batches/{batch_id}/captures/{capture_id}")
+    def update_capture_address(batch_id: uuid.UUID, capture_id: uuid.UUID, body: CaptureAddressUpdate,
+                               user: CurrentUser) -> dict:
+        """Correct the address on a photo already uploaded from an open session. Once the session is
+        closed the address is changed on the draft instead, where the change is versioned."""
+        address = clean_field("address", body.address)
+        if address is None:
+            raise HTTPException(422, "Give an address, or leave the one that was looked up")
+        with db.connect() as conn:
+            batch = get_batch(conn, batch_id)
+            require_owner(batch, user)
+            require_capturing(batch)
+            changed = conn.execute(
+                "UPDATE captures SET address = ?, address_source = ?, address_full = ?, address_match = ?"
+                " WHERE id = ? AND batch_id = ?",
+                (*capture_address(address, body.address_source, None, None), str(capture_id), str(batch_id)),
+            ).rowcount
+            if not changed:
+                raise HTTPException(404, "Capture not found")
+            return capture_json(conn.execute("SELECT * FROM captures WHERE id = ?", (str(capture_id),)).fetchone())
 
     @app.delete("/api/batches/{batch_id}/captures/{capture_id}", status_code=204)
     def delete_capture(batch_id: uuid.UUID, capture_id: uuid.UUID, user: CurrentUser) -> None:

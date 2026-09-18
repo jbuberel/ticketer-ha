@@ -182,7 +182,7 @@ def test_deleting_a_queued_batch_stops_its_extraction(make_client):
     assert extractor.calls == 0
 
 
-def test_older_database_gains_review_columns(tmp_path):
+def test_older_database_gains_review_and_capture_address_columns(tmp_path):
     path = tmp_path / "ticketer.db"
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)  # the tables as version 2 created them
@@ -199,4 +199,6 @@ def test_older_database_gains_review_columns(tmp_path):
     with db.connect() as conn:
         row = conn.execute("SELECT version, decision, edits, plate_checked FROM drafts").fetchone()
         assert tuple(row) == (1, None, None, 0)
+        address = conn.execute("SELECT address, address_full, address_source, address_match FROM captures").fetchone()
+        assert tuple(address) == (None, None, None, None)  # photos captured before this existed
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION

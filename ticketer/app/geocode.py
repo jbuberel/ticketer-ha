@@ -5,6 +5,7 @@ Uses the ArcGIS World GeocodeServer that the City of Sacramento 311 portal's add
 
 import json
 import math
+import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ CITY_311_GEOCODER = (
     "https://utility.arcgis.com/usrsvcs/servers/3f594920d25340bcb7108f137a28cda1/rest/services/World/GeocodeServer"
 )
 MAX_BUILDING_DISTANCE_M = 40  # beyond this, an address along the block is the better guess
+NEARBY_STEPS = 2       # house numbers offered either side of the matched one
+HOUSE_NUMBER_STEP = 2  # one side of a street is all odd or all even
 
 
 @dataclass(frozen=True)
@@ -89,3 +92,18 @@ class ArcGisReverseGeocoder:
         if building and building.distance_m <= MAX_BUILDING_DISTANCE_M:
             return building
         return parse_reverse_geocode(self._call(lat, lon), lat, lon) or building
+
+
+def nearby_addresses(street: str, steps: int = NEARBY_STEPS) -> list[str]:
+    """The matched address plus its neighbours, for picking the right house from the sidewalk.
+
+    A fix taken beside a parked car resolves to whichever house is nearest, which is often a
+    door or two off. Stepping the number by 2 stays on the same side of the street, and staying
+    inside the hundred block keeps the list from naming a house around the corner.
+    """
+    match = re.match(r"(\d+)(\s.*)$", street)
+    if not match:
+        return [street]  # no leading house number to step: offer what was matched
+    number, rest = int(match[1]), match[2]
+    numbers = {number + HOUSE_NUMBER_STEP * step for step in range(-steps, steps + 1)}
+    return [f"{n}{rest}" for n in sorted(numbers) if n > 0 and n // 100 == number // 100]

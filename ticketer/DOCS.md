@@ -48,6 +48,12 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
    - Each photo is saved on the phone right away, with the latest GPS fix, and uploads in the
      background.
    - If there's no recent fix, the photo waits a few seconds for one.
+   - The **address** is looked up there and then and appears on the photo in the list. It's
+     used as-is, so you can keep walking. Tap it if it's wrong: the picker lists the
+     neighbouring house numbers on the same side of the street, and a box for anything else.
+     Correcting it works for photos already uploaded, until you stop the session.
+   - No signal, or nothing found nearby? The photo goes up without an address and one is worked
+     out from its GPS fix during extraction, as before.
 3. **Stop Capture & Process** when you're done. It waits for the remaining uploads, then
    queues the batch for extraction.
 4. The batch view fills in as each photo is processed, usually 5–10 s per photo. Each draft
@@ -56,8 +62,10 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
    - **Local plate reader:** a second, on-device plate reading, and whether it matches.
    - A **close-up** of the plate.
    - **Vehicle:** color, make and model, with a confidence.
-   - **Address:** the nearest street address to the GPS fix, and how far away it is. A
-     "building" match is a specific address; "along the block" is an estimate.
+   - **Address:** what was settled on the street — *chosen* or *typed on the street* if you
+     touched it, *looked up while capturing* if you let it stand. For a photo that had no
+     address, it's worked out from the GPS fix here instead, and shown with how far away it
+     matched: a "building" match is a specific address, "along the block" is an estimate.
 
    Treat a plate as trustworthy only when it's `plate high` **and** the local reader matches.
    Check anything else against the close-up.
@@ -92,7 +100,8 @@ If the app is closed or the page reloads mid-session, reopening it resumes the s
   - Each photo, downscaled and with its metadata removed, goes to the **Anthropic API** for
     extraction.
   - Each photo's GPS position goes to the **ArcGIS geocoder** that the City of Sacramento 311
-    address map uses.
+    address map uses — while you're capturing, and again during extraction for any photo that
+    has no address yet.
   - The local plate reader runs on this server.
 - Nothing is deleted automatically yet.
 
