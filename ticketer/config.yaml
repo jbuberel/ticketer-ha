@@ -1,8 +1,8 @@
 # https://developers.home-assistant.io/docs/apps/configuration#app-configuration
 name: Ticketer
-version: "0.5.0"
+version: "0.6.2"
 slug: ticketer
-description: Phone-captured parking reports, reviewed before submission (review build)
+description: Phone-captured parking reports, reviewed by you, then filed with Sacramento 311
 url: "https://github.com/jbuberel/ticketer-ha"
 arch:
   - aarch64
@@ -18,9 +18,23 @@ options:
   tailscale_hostname: ticketer
   tailscale_tags: "tag:ticketer"
   extractor_model: claude-sonnet-5
+  # Leave this on until you have checked a dry run. With it on, Submit builds the exact request
+  # and shows it to you without filing anything with the city.
+  submit_dry_run: true
+  # Send the photo with each request. A photo makes a response more likely, and becomes part
+  # of the public case record along with the rest of the request.
+  attach_photo: true
 schema:
   tailscale_auth_key: "password?"
   tailscale_hostname: "str"
   tailscale_tags: "str?"
   anthropic_api_key: "password?"
   extractor_model: "str"
+  submit_dry_run: "bool"
+  attach_photo: "bool"
+  # Who the request is filed as. Leave all four empty to file anonymously; 311 then sends no
+  # confirmation email.
+  reporter_first_name: "str?"
+  reporter_last_name: "str?"
+  reporter_email: "email?"
+  reporter_phone: "str?"

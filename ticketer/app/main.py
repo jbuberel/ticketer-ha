@@ -22,10 +22,12 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, ConfigDict
 
-from .db import Database
+from .db import LIVE_SUBMISSION_STATUSES, Database
 from .extract import ClaudeExtractor
 from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder, GeocodeError, nearby_addresses
 from .plates import FastAlprReader, normalize_plate
+from .sac311 import Reporter, Sac311Portal
+from .submit import SubmitConfig, Submitter, queue
 from .worker import Pipeline, Worker, plate_crop_path
 
 VERSION = os.environ.get("TICKETER_VERSION", "dev")
@@ -47,6 +49,20 @@ class Settings:
     extractor_model: str = DEFAULT_EXTRACTOR_MODEL
     geocoder_url: str = CITY_311_GEOCODER
     run_worker: bool = True
+    # 311 submission. Dry run is the default and has to be turned off deliberately: with it on,
+    # a submission assembles the payload and stops without creating a case.
+    submit_dry_run: bool = True
+    # The portal's photo upload step has not been captured yet, so a real send with this on
+    # fails before creating a case. Turn it off to file text-only requests meanwhile.
+    attach_photo: bool = True
+    reporter_first_name: str | None = None
+    reporter_last_name: str | None = None
+    reporter_email: str | None = None
+    reporter_phone: str | None = None
+
+    def reporter(self) -> Reporter:
+        return Reporter(first_name=self.reporter_first_name, last_name=self.reporter_last_name,
+                        email=self.reporter_email, phone=self.reporter_phone)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -56,6 +72,12 @@ class Settings:
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
             extractor_model=os.environ.get("TICKETER_EXTRACTOR_MODEL") or DEFAULT_EXTRACTOR_MODEL,
             geocoder_url=os.environ.get("TICKETER_GEOCODER_URL") or CITY_311_GEOCODER,
+            submit_dry_run=(os.environ.get("TICKETER_SUBMIT_DRY_RUN", "true").lower() != "false"),
+            attach_photo=(os.environ.get("TICKETER_ATTACH_PHOTO", "true").lower() != "false"),
+            reporter_first_name=os.environ.get("TICKETER_REPORTER_FIRST_NAME") or None,
+            reporter_last_name=os.environ.get("TICKETER_REPORTER_LAST_NAME") or None,
+            reporter_email=os.environ.get("TICKETER_REPORTER_EMAIL") or None,
+            reporter_phone=os.environ.get("TICKETER_REPORTER_PHONE") or None,
         )
 
 
@@ -104,6 +126,22 @@ class CaptureAddressUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     address: str | None
     address_source: AddressSource
+
+
+class DraftApproval(BaseModel):
+    """One draft the owner is approving, pinned to the exact version they were looking at."""
+
+    model_config = ConfigDict(extra="forbid")
+    capture_id: uuid.UUID
+    version: int
+
+
+class SubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    drafts: list[DraftApproval]
+    # Only a request that deliberately says otherwise can leave dry run, and only when the
+    # server is configured to allow it.
+    dry_run: bool = True
 
 
 EDITABLE_FIELDS = ("plate_text", "plate_state", "color", "make", "model", "address")
@@ -191,10 +229,16 @@ DRAFT_FIELDS = ("status", "error", "attempts", "plate_text", "plate_state", "pla
                 "alpr_confidence", "alpr_error", "plates_agree", "address", "address_full", "address_match",
                 "address_distance_m", "geocode_error", "extracted_at")
 REVIEW_FIELDS = ("version", "decision", "edits", "plate_checked", "reviewed_by", "reviewed_at")
+SUBMISSION_FIELDS = ("id", "status", "dry_run", "draft_version", "case_number", "error", "description",
+                     "warnings", "photo_attached", "created_at", "completed_at")
 CAPTURE_WITH_DRAFT_SELECT = (
     "SELECT c.*, d.capture_id AS d_capture_id, d.alpr_box AS d_alpr_box, "  # extracted_at is in DRAFT_FIELDS
     + ", ".join(f"d.{f} AS d_{f}" for f in DRAFT_FIELDS + REVIEW_FIELDS)
+    + ", " + ", ".join(f"s.{f} AS s_{f}" for f in SUBMISSION_FIELDS)
     + " FROM captures c LEFT JOIN drafts d ON d.capture_id = c.id"
+    # Only the newest attempt is shown; the rest stay in the table as the record of what was sent.
+    + " LEFT JOIN submissions s ON s.id = (SELECT id FROM submissions WHERE capture_id = c.id"
+    + " ORDER BY created_at DESC, rowid DESC LIMIT 1)"
 )
 CAPTURES_WITH_DRAFTS = CAPTURE_WITH_DRAFT_SELECT + " WHERE c.batch_id = ? ORDER BY c.captured_at"
 CAPTURE_WITH_DRAFT = CAPTURE_WITH_DRAFT_SELECT + " WHERE c.batch_id = ? AND c.id = ?"
@@ -202,7 +246,8 @@ CAPTURE_WITH_DRAFT = CAPTURE_WITH_DRAFT_SELECT + " WHERE c.batch_id = ? AND c.id
 
 def capture_json(row: sqlite3.Row) -> dict:
     base = f"/api/batches/{row['batch_id']}/captures/{row['id']}"
-    out = {k: row[k] for k in CAPTURE_FIELDS} | {"photo_url": f"{base}/photo", "plate_crop_url": None, "draft": None}
+    out = ({k: row[k] for k in CAPTURE_FIELDS}
+           | {"photo_url": f"{base}/photo", "plate_crop_url": None, "draft": None, "submission": None})
     if "d_capture_id" in row.keys() and row["d_capture_id"]:
         draft = {f: row[f"d_{f}"] for f in DRAFT_FIELDS}
         if draft["plates_agree"] is not None:
@@ -224,6 +269,14 @@ def capture_json(row: sqlite3.Row) -> dict:
             # The close-up is rewritten when a draft is re-run; a new URL keeps phones from showing a cached one.
             version = hashlib.sha1(f"{row['d_extracted_at']}{row['d_alpr_box']}".encode()).hexdigest()[:12]
             out["plate_crop_url"] = f"{base}/plate?v={version}"
+    if "s_id" in row.keys() and row["s_id"]:
+        submission = {f: row[f"s_{f}"] for f in SUBMISSION_FIELDS}
+        submission["dry_run"] = bool(submission["dry_run"])
+        submission["photo_attached"] = bool(submission["photo_attached"])
+        submission["warnings"] = json.loads(submission["warnings"] or "[]")
+        # Stale once the draft has been edited since: the approval covered the older values.
+        submission["stale"] = bool(out["draft"] and submission["draft_version"] != row["d_version"])
+        out["submission"] = submission
     return out
 
 
@@ -262,12 +315,16 @@ def require_capturing(batch: sqlite3.Row) -> None:
         raise HTTPException(409, f"Batch is {batch['status']} and no longer accepts changes")
 
 
-def create_app(settings: Settings | None = None, pipeline: Pipeline | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, pipeline: Pipeline | None = None,
+               sac311: Sac311Portal | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     db = Database(settings.data_dir / "ticketer.db")
     photos_dir = settings.data_dir / "photos"
     pipeline = pipeline or default_pipeline(settings)
     worker = Worker(db, settings.data_dir, pipeline)
+    submitter = Submitter(db, settings.data_dir, sac311 or Sac311Portal(),
+                          SubmitConfig(reporter=settings.reporter(), dry_run=settings.submit_dry_run,
+                                       attach_photo=settings.attach_photo))
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -275,14 +332,17 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         db.init()
         if settings.run_worker:
             worker.start()
+            submitter.start()
         try:
             yield
         finally:
             worker.stop()
+            submitter.stop()
 
     app = FastAPI(title="Ticketer", version=VERSION, lifespan=lifespan)
     app.state.db = db
     app.state.worker = worker
+    app.state.submitter = submitter
 
     def current_user(request: Request) -> User:
         # Tailscale Serve sets these headers; the API itself only listens on localhost.
@@ -300,7 +360,11 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     @app.get("/api/whoami")
     def whoami(user: CurrentUser) -> dict:
         return {"version": VERSION, "server_time": utc_now(), "user_login": user.login,
-                "user_name": user.name, "extraction_enabled": worker.extraction_enabled}
+                "user_name": user.name, "extraction_enabled": worker.extraction_enabled,
+                "submit_dry_run": settings.submit_dry_run,
+                "reporter": "anonymous" if settings.reporter().anonymous else
+                            " ".join(filter(None, (settings.reporter_first_name, settings.reporter_last_name)))
+                            or settings.reporter_email}
 
     @app.get("/api/geocode")
     def reverse_geocode(
@@ -361,6 +425,14 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             except HTTPException:
                 return
             require_owner(batch, user)
+            sent = conn.execute(
+                "SELECT COUNT(*) FROM submissions WHERE batch_id = ? AND dry_run = 0"
+                f" AND status IN ({', '.join('?' for _ in LIVE_SUBMISSION_STATUSES)})",
+                (str(batch_id), *LIVE_SUBMISSION_STATUSES),
+            ).fetchone()[0]
+            if sent:
+                raise HTTPException(409, f"{sent} of these drafts went to 311;"
+                                         " this batch is the record of what was sent and can't be deleted")
             conn.execute("DELETE FROM batches WHERE id = ?", (str(batch_id),))  # captures and drafts cascade
         shutil.rmtree(photos_dir / str(batch_id), ignore_errors=True)
 
@@ -539,6 +611,64 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                 )
                 row = conn.execute(CAPTURE_WITH_DRAFT, (str(batch_id), str(capture_id))).fetchone()
             return capture_json(row)
+
+    @app.post("/api/batches/{batch_id}/submit")
+    def submit_batch(batch_id: uuid.UUID, body: SubmitRequest, user: CurrentUser) -> dict:
+        """Queue approved drafts for 311.
+
+        Each draft is pinned to the version the owner approved, so a stale screen can't send
+        values they never saw. A real send additionally requires the server to be configured for
+        it; otherwise the request is queued as a dry run, which assembles the payload and stops.
+        """
+        if not body.drafts:
+            raise HTTPException(422, "No drafts to submit")
+        dry_run = body.dry_run or settings.submit_dry_run
+        with db.connect(immediate=True) as conn:
+            batch = get_batch(conn, batch_id)
+            require_owner(batch, user)
+            if batch["status"] != "ready":
+                raise HTTPException(409, "Drafts can be submitted once extraction has finished")
+            queued = []
+            for approval in body.drafts:
+                row = conn.execute(CAPTURE_WITH_DRAFT, (str(batch_id), str(approval.capture_id))).fetchone()
+                if row is None or not row["d_capture_id"]:
+                    raise HTTPException(404, f"Draft {approval.capture_id} not found")
+                if row["d_decision"] != "report":
+                    raise HTTPException(409, "Only drafts marked Report can be submitted")
+                if approval.version != row["d_version"]:
+                    raise HTTPException(409, "A draft changed since it was loaded; reload and check it again")
+                live = conn.execute(
+                    "SELECT status FROM submissions WHERE capture_id = ? AND dry_run = 0"
+                    f" AND status IN ({', '.join('?' for _ in LIVE_SUBMISSION_STATUSES)})",
+                    (str(approval.capture_id), *LIVE_SUBMISSION_STATUSES),
+                ).fetchone()
+                if live and not dry_run:
+                    raise HTTPException(409, f"That draft was already sent to 311 ({live['status']});"
+                                             " check the case before sending it again")
+                queued.append(queue(conn, str(approval.capture_id), str(batch_id), approval.version,
+                                    dry_run, user.login))
+        submitter.wake()
+        with db.connect() as conn:
+            return {"queued": len(queued), "dry_run": dry_run,
+                    "batch": batch_json(conn, get_batch(conn, batch_id), with_captures=True)}
+
+    @app.get("/api/batches/{batch_id}/submissions/{submission_id}")
+    def get_submission(batch_id: uuid.UUID, submission_id: uuid.UUID, user: CurrentUser) -> dict:
+        """One submission with the full payload, for checking a dry run before sending for real
+        and for comparing against a request captured from the portal by hand."""
+        with db.connect() as conn:
+            require_owner(get_batch(conn, batch_id), user)
+            row = conn.execute("SELECT * FROM submissions WHERE id = ? AND batch_id = ?",
+                               (str(submission_id), str(batch_id))).fetchone()
+        if row is None:
+            raise HTTPException(404, "Submission not found")
+        out = {f: row[f] for f in SUBMISSION_FIELDS}
+        out["dry_run"] = bool(out["dry_run"])
+        out["photo_attached"] = bool(out["photo_attached"])
+        out["warnings"] = json.loads(out["warnings"] or "[]")
+        out["case_record"] = json.loads(row["payload"] or "null")
+        out["requested_by"] = row["requested_by"]
+        return out
 
     @app.get("/api/batches/{batch_id}/captures/{capture_id}/photo")
     def capture_photo(batch_id: uuid.UUID, capture_id: uuid.UUID, user: CurrentUser) -> FileResponse:

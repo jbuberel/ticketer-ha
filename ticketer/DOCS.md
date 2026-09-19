@@ -3,7 +3,10 @@
 Take GPS-tagged photos of vehicles on a walk. They're grouped into a batch and stored on this
 Home Assistant server. Each photo is then turned into a draft: plate, state, color, make, model
 and the nearest street address. You review each draft: fix anything that's wrong, then choose
-**Report** or **Don't report**. Sending reports to 311 comes in a later version.
+**Report** or **Don't report**. The ones you marked Report are then filed with Sacramento 311.
+
+**Dry run is on when you install it.** Nothing reaches the city until you turn `submit_dry_run`
+off yourself, and even then only drafts you approved are sent.
 
 The app joins your Tailscale network (tailnet) as its own device and serves the phone app at
 `https://ticketer.<your-tailnet>.ts.net`. It is **not** exposed on your LAN or the internet.
@@ -84,10 +87,27 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
    - **Don't report** for anything that shouldn't be reported, such as a guest with a pass.
      Tap a chosen option again to undo it.
    - Only the person who captured a batch can review it.
+6. **Submit.** Once every draft is decided, the panel at the top of the batch says how many are
+   ready and what will happen.
+   - With **dry run** on (the default), the button builds each request and stops. Open **What
+     would be sent** on a draft to read the text an officer would see, and **Show the raw
+     request** for the whole payload. Nothing reaches the city.
+   - With dry run off, the button says how many go to 311 and who they're filed as. It asks you
+     to confirm, listing every plate and address. **This dispatches a parking officer and can't
+     be undone.**
+   - The photo goes with the request (`attach_photo`, on by default), along with the plate,
+     vehicle, address and concern. Turn it off to file text-only requests.
+   - Requests go one at a time with a short pause. Each draft then shows **sent to 311** with
+     its case number.
+   - **unconfirmed** means 311 never answered. The request may still have been filed, so the app
+     will not send it again. Look the address up in the city's 311 open data before retrying.
+   - **not sent** means it definitely wasn't filed; fix what the message says and submit again.
+   - A batch with requests at 311 can't be deleted any more: it's your record of what was sent.
 
 To take out a bad shot, tap **✕** on it; **Discard session** throws the whole session away.
 To get rid of a finished batch, for example test photos, open it and tap **Delete batch** at the
-bottom. This permanently removes its photos, close-ups and drafts from the server.
+bottom. This permanently removes its photos, close-ups and drafts from the server. A batch with
+requests already at 311 can't be deleted.
 If the app is closed or the page reloads mid-session, reopening it resumes the session.
 
 ## Your data
@@ -103,6 +123,10 @@ If the app is closed or the page reloads mid-session, reopening it resumes the s
     address map uses — while you're capturing, and again during extraction for any photo that
     has no address yet.
   - The local plate reader runs on this server.
+  - When you submit, the request goes to **Sacramento 311**: the plate, vehicle colour, make
+    and model, the address, and your contact details if you set them. Photos are not sent yet.
+    The city's own map details for that address travel with it, as they do from the website —
+    including who owns the parcel. Everything in a submitted request becomes a city record.
 - Nothing is deleted automatically yet.
 
 ## Troubleshooting
@@ -114,5 +138,8 @@ If the app is closed or the page reloads mid-session, reopening it resumes the s
 | Log: `requested tags ... are invalid or not permitted` | Add the `tagOwners` entry; make sure the key has `tag:ticketer` |
 | Device shows up as `ticketer-1` | An old `ticketer` device exists; delete it in the admin console and restart |
 | App: `Not signed in: No Tailscale identity` | Open the `https://ticketer.<tailnet>.ts.net` address, with Tailscale connected |
+| Submit says `dry run` and you want to send | Turn off `submit_dry_run` in the Configuration tab and restart the app |
+| `The city's map can't place ...` | Edit the draft's address. It has to be a real address inside Sacramento |
+| A draft is stuck on `unconfirmed` | Check the city's 311 open data for a case at that address, then decide whether to send it again |
 | Phone: "Can't connect to the site", yet Tailscale is connected and `tailscale ping ticketer` works | The phone can't look up the `ts.net` name (the app log shows no requests). To confirm, open `https://<ticketer's Tailscale IP>/`: "can't provide a secure connection" means the connection works and only the lookup fails. Set Android Private DNS to Automatic/Off, set Chrome secure DNS to your current provider or off, check **Use Tailscale DNS** is on in the Tailscale app. If it still fails, restart the phone |
 | GPS bar: `Location permission denied` | Allow location for the site (iPhone: Settings → Privacy & Security → Location Services → Safari Websites) |

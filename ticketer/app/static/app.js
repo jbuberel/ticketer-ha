@@ -484,6 +484,7 @@ let batchTimer = null;
 let shown = null; // { batch, me } on screen
 let editing = null; // { id, values, plateChecked, reportAfter } for the draft whose edit form is open
 let saving = null; // capture id with a review change in flight
+let submitting = false; // a submit request is in flight
 
 // Re-renders in place every few seconds while extraction is running.
 async function renderBatch(id) {
@@ -505,7 +506,8 @@ async function renderBatch(id) {
     if (view.dataset.view !== "batch" || view.dataset.batchId !== id) return; // navigated away
     shown = { batch, me };
     drawBatch();
-    if (batch.status === "queued" || batch.status === "processing") {
+    const working = batch.captures.some((c) => ["queued", "sending"].includes(c.submission?.status));
+    if (batch.status === "queued" || batch.status === "processing" || working) {
       batchTimer = setTimeout(() => {
         if (location.hash === `#/batch/${id}`) renderBatch(id);
       }, BATCH_REFRESH_MS);
@@ -549,6 +551,7 @@ function batchContent(batch, me) {
     drafts.error ? h("div", { class: "notice error" },
       `${plural(drafts.error, "photo")} couldn't be extracted.`,
       h("button", { class: "button subtle inline", onclick: () => retryExtraction(batch.id) }, "Retry failed")) : null,
+    batch.status === "ready" && canReview ? submitPanel(batch, me) : null,
     h("ul", { class: "photos" }, batch.captures.map((capture, index) => draftCard(capture, index, { batch, canReview }))),
     batch.status === "ready" && drafts.done && canReview
       ? h("button", { class: "button subtle", onclick: () => rerunBatch(batch) }, "Re-run extraction")
@@ -558,6 +561,51 @@ function batchContent(batch, me) {
       ? h("button", { class: "button danger", onclick: () => deleteBatch(batch) }, "Delete batch")
       : null,
   ];
+}
+
+// Drafts marked Report that 311 hasn't been told about yet. A draft whose submission came back
+// `unknown` is deliberately not here: the owner has to check the city's open data first.
+const SENDABLE = (capture) => capture.draft?.review.decision === "report"
+  && !["queued", "sending", "sent", "unknown"].includes(capture.submission?.status ?? "");
+
+function submitPanel(batch, me) {
+  const sendable = batch.captures.filter(SENDABLE);
+  const sent = batch.captures.filter((c) => c.submission?.status === "sent");
+  const dryRun = me.submit_dry_run !== false;
+  if (!sendable.length) {
+    return sent.length
+      ? notice("ok", `${plural(sent.length, "request")} sent to 311.`)
+      : null;
+  }
+  return h("div", { class: `notice ${dryRun ? "" : "warn"}` },
+    h("div", {}, h("strong", {}, `${plural(sendable.length, "request")} ready to send`),
+      sent.length ? ` · ${sent.length} already sent` : ""),
+    h("div", { class: "small" }, dryRun
+      ? "Dry run is on: this builds the exact request and shows it to you without sending anything to 311."
+      : `These go to Sacramento 311 as ${me.reporter === "anonymous" ? "an anonymous report" : me.reporter}, with the photo attached. A parking officer is dispatched.`),
+    h("button", { class: `button ${dryRun ? "subtle" : "primary"}`, disabled: submitting,
+      onclick: () => submitDrafts(batch, sendable, dryRun) },
+      submitting ? "Sending…" : dryRun ? `Dry run ${plural(sendable.length, "request")}` : `Send ${plural(sendable.length, "request")} to 311`));
+}
+
+async function submitDrafts(batch, sendable, dryRun) {
+  const what = sendable.map((c, i) => `${i + 1}. ${c.draft.review.values.plate_text} — ${c.draft.review.values.address}`).join("\n");
+  const question = dryRun
+    ? `Build ${plural(sendable.length, "request")} without sending?\n\n${what}\n\nNothing is sent to 311.`
+    : `Send ${plural(sendable.length, "request")} to Sacramento 311?\n\n${what}\n\nThis files real requests and dispatches a parking officer. It can't be undone.`;
+  if (!confirm(question)) return;
+  submitting = true;
+  drawBatch();
+  try {
+    await api("POST", `/api/batches/${encodeURIComponent(batch.id)}/submit`, {
+      json: { dry_run: dryRun, drafts: sendable.map((c) => ({ capture_id: c.id, version: c.draft.review.version })) },
+    });
+  } catch (error) {
+    showError(`Couldn't submit: ${error.message}`);
+  } finally {
+    submitting = false;
+  }
+  renderBatch(batch.id);
 }
 
 async function deleteBatch(batch) {
@@ -586,8 +634,7 @@ function reviewSummary(batch, canReview) {
   }
   return h("div", { class: `notice ${undecided ? "" : "ok"}` },
     h("div", {}, h("strong", {}, undecided ? `${plural(undecided, "draft")} to review` : "All drafts reviewed"), ` · ${counts}`),
-    undecided ? h("div", { class: "small" }, "Choose Report or Don't report for each photo. Edit anything that's wrong first.") : null,
-    report ? h("div", { class: "small" }, "Sending requests to 311 comes in the next version.") : null);
+    undecided ? h("div", { class: "small" }, "Choose Report or Don't report for each photo. Edit anything that's wrong first.") : null);
 }
 
 function draftCard(capture, index, ctx) {
@@ -636,6 +683,7 @@ function draftDetails(capture, index, ctx) {
   else if (draft.status === "done") vehicleChip = chip(`vehicle ${draft.make_model_confidence}`, CONFIDENCE_KIND[draft.make_model_confidence]);
   rows.push(h("div", {}, `${vehicle} `, vehicleChip));
   rows.push(addressRow(capture, draft));
+  if (capture.submission) rows.push(submissionRow(capture.submission));
   if (draft.notes) rows.push(h("div", { class: "small muted" }, draft.notes));
   rows.push(when);
   if (ctx.canReview) rows.push(reviewControls(capture));
@@ -674,6 +722,54 @@ function localPlateRow(draft) {
   const verdict = draft.plates_agree == null ? "" : draft.plates_agree ? " ✓ matches" : " ✗ differs";
   return h("div", { class: `small ${draft.plates_agree === false ? "warn-text" : "muted"}` },
     `Local plate reader: ${draft.alpr_text}${verdict}`);
+}
+
+const SUBMISSION_LABEL = {
+  queued: "waiting to send",
+  sending: "sending to 311…",
+  prepared: "dry run — nothing sent",
+  sent: "sent to 311",
+  failed: "not sent",
+  unknown: "unconfirmed",
+};
+const SUBMISSION_KIND = { sent: "ok", failed: "bad", unknown: "bad", prepared: "", queued: "warn", sending: "warn" };
+
+function submissionRow(submission) {
+  const rows = [h("div", {},
+    chip(SUBMISSION_LABEL[submission.status] ?? submission.status, SUBMISSION_KIND[submission.status] ?? ""),
+    submission.case_number ? h("strong", {}, ` ${submission.case_number}`) : null,
+    submission.photo_attached ? h("span", { class: "small muted" }, " · photo attached") : null)];
+  if (submission.description) {
+    // On a dry run this is the whole point: the words an officer would read.
+    rows.push(h("details", { class: "sent-detail" },
+      h("summary", {}, submission.dry_run ? "What would be sent" : "What was sent"),
+      h("p", { class: "small" }, submission.description),
+      submission.warnings.length
+        ? h("ul", { class: "flags" }, submission.warnings.map((w) => h("li", {}, w)))
+        : null,
+      h("button", { class: "button subtle", onclick: (e) => showPayload(e.target, submission) }, "Show the raw request")));
+  }
+  if (submission.status === "unknown") {
+    rows.push(notice("error", `311 never confirmed this one: ${submission.error}. It may still have been`
+      + " filed. Check the city's open data before sending it again."));
+  } else if (submission.status === "failed") {
+    rows.push(h("div", { class: "small error-text" }, submission.error));
+  }
+  if (submission.stale && submission.status === "sent") {
+    rows.push(h("div", { class: "small warn-text" }, "This draft was edited after it was sent; 311 has the older version."));
+  }
+  return h("div", { class: "submission" }, rows);
+}
+
+async function showPayload(button, submission) {
+  button.disabled = true;
+  try {
+    const full = await api("GET", `/api/batches/${encodeURIComponent(shown.batch.id)}/submissions/${submission.id}`);
+    button.replaceWith(h("pre", { class: "payload" }, JSON.stringify(full.case_record, null, 1)));
+  } catch (error) {
+    button.disabled = false;
+    showError(`Couldn't load the request: ${error.message}`);
+  }
 }
 
 const ADDRESS_SOURCE = {

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS batches (
@@ -79,7 +79,35 @@ CREATE TABLE IF NOT EXISTS drafts (
 );
 
 CREATE INDEX IF NOT EXISTS drafts_by_status ON drafts (status, next_attempt_at);
+
+-- One row per attempt to send a draft to 311, including dry runs. This is the record of what
+-- was sent, so it is never rewritten in place: a re-send adds a row.
+CREATE TABLE IF NOT EXISTS submissions (
+    id             TEXT PRIMARY KEY,
+    capture_id     TEXT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
+    batch_id       TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+    draft_version  INTEGER NOT NULL,   -- the draft version the owner approved
+    dry_run        INTEGER NOT NULL,
+    status         TEXT NOT NULL,      -- queued | sending | prepared | sent | failed | unknown
+    payload        TEXT,               -- the caseRec assembled, as JSON
+    description    TEXT,               -- the free text 311 shows the officer
+    warnings       TEXT,               -- JSON list, things worth reading before a real send
+    case_number    TEXT,
+    case_id        TEXT,
+    error          TEXT,
+    photo_attached INTEGER NOT NULL DEFAULT 0,
+    requested_by   TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    completed_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS submissions_by_status ON submissions (status, created_at);
+CREATE INDEX IF NOT EXISTS submissions_by_capture ON submissions (capture_id, created_at);
 """
+
+# A real submission in one of these states means a case may exist at the city. The draft can't be
+# sent again, and its batch can't be deleted, while any of them stands.
+LIVE_SUBMISSION_STATUSES = ("queued", "sending", "sent", "unknown")
 
 # Address columns on captures (v4), settled on the phone while the photo is taken so the address
 # doesn't have to be remembered back home. When set, the extraction worker uses these instead of

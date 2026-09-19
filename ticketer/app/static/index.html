@@ -119,6 +119,14 @@
     .photos > li.skip > img { opacity: 0.45; }
     .flags { margin: 0; padding: 8px 12px 8px 28px; border-radius: 10px; background: var(--warn-bg); color: var(--warn); font-size: 0.85rem; }
     .plate.unverified { text-decoration: underline wavy var(--warn); text-underline-offset: 6px; }
+    .submission { display: grid; gap: 4px; padding-top: 2px; }
+    .submission strong { font-variant-numeric: tabular-nums; }
+    .sent-detail summary { font-size: 0.85rem; color: var(--accent); cursor: pointer; padding: 4px 0; }
+    .sent-detail p { margin: 4px 0; }
+    .payload {
+      margin: 6px 0 0; padding: 10px; border-radius: 8px; background: var(--subtle);
+      font-size: 0.72rem; line-height: 1.35; overflow-x: auto; max-height: 20rem;
+    }
     .review { display: flex; gap: 8px; margin-top: 4px; }
     .review .button { width: auto; padding: 10px 16px; }
     .segmented { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; border-radius: 12px; background: var(--subtle); }

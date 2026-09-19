@@ -1,5 +1,7 @@
 """The address is settled on the phone as each photo is taken, not from memory back home."""
 
+import uuid
+
 import pytest
 
 from app.geocode import GeocodeError, nearby_addresses
@@ -7,7 +9,7 @@ from test_api import ALICE, BOB, jpeg, new_batch, upload
 from test_extraction import FakeExtractor, FakeGeocoder, drain, extraction, get, make_client  # noqa: F401
 
 FIX = {"lat": 37.7749, "lon": -122.4194, "accuracy_m": 9}
-FIELD_ADDRESS = {"address": "711 Example St", "address_source": "picked"}
+FIELD_ADDRESS = {"address": "1301 Example St", "address_source": "picked"}
 
 
 @pytest.fixture
@@ -57,7 +59,7 @@ def test_upload_keeps_the_address_settled_on_the_street(client):
     _, r = upload(client, batch_id, **FIX, **FIELD_ADDRESS)
     assert r.status_code == 201, r.text
     body = r.json()
-    assert (body["address"], body["address_source"]) == ("711 Example St", "picked")
+    assert (body["address"], body["address_source"]) == ("1301 Example St", "picked")
     # The geocoder's match line described the address it returned, not this one.
     assert (body["address_full"], body["address_match"]) == (None, None)
 
@@ -74,9 +76,9 @@ def test_upload_keeps_the_match_details_of_an_untouched_lookup(client):
 
 def test_upload_rejects_an_address_without_its_source(client):
     batch_id = new_batch(client)
-    assert upload(client, batch_id, **FIX, address="711 Example St")[1].status_code == 422
+    assert upload(client, batch_id, **FIX, address="1301 Example St")[1].status_code == 422
     assert upload(client, batch_id, **FIX, address_source="picked")[1].status_code == 422
-    assert upload(client, batch_id, **FIX, address="711 Example St", address_source="guessed")[1].status_code == 422
+    assert upload(client, batch_id, **FIX, address="1301 Example St", address_source="guessed")[1].status_code == 422
 
 
 def test_address_can_be_corrected_while_the_session_is_open(client):
@@ -95,11 +97,11 @@ def test_address_can_be_corrected_while_the_session_is_open(client):
 def test_correcting_an_address_is_the_creator_s_and_only_until_the_session_closes(client):
     batch_id = new_batch(client)
     capture_id, _ = upload(client, batch_id, **FIX, **FIELD_ADDRESS)
-    change = {"address": "715 Example St", "address_source": "picked"}
+    change = {"address": "1305 Example St", "address_source": "picked"}
     patch = f"/api/batches/{batch_id}/captures/{capture_id}"
     assert client.patch(patch, json=change, headers=BOB).status_code == 403
     assert client.patch(patch, json={"address": "  ", "address_source": "typed"}, headers=ALICE).status_code == 422
-    missing = client.patch(f"/api/batches/{batch_id}/captures/{capture_id[:-1]}0", json=change, headers=ALICE)
+    missing = client.patch(f"/api/batches/{batch_id}/captures/{uuid.uuid4()}", json=change, headers=ALICE)
     assert missing.status_code == 404
 
     client.post(f"/api/batches/{batch_id}/process", headers=ALICE)
@@ -115,14 +117,14 @@ def test_extraction_uses_the_field_address_instead_of_geocoding(make_client):  #
         drain(client)
         draft = capture_of(client, batch_id)["draft"]
         assert draft["status"] == "done"
-        assert draft["address"] == "711 Example St" and draft["review"]["values"]["address"] == "711 Example St"
-        assert draft["address_full"] == "711 Example St"  # no fuller form: the geocoder never saw it
+        assert draft["address"] == "1301 Example St" and draft["review"]["values"]["address"] == "1301 Example St"
+        assert draft["address_full"] == "1301 Example St"  # no fuller form: the geocoder never saw it
         assert draft["geocode_error"] is None
 
         # Re-running extraction still starts from the address settled on the street.
         client.post(f"/api/batches/{batch_id}/retry?rerun_all=true", headers=ALICE)
         drain(client)
-        assert capture_of(client, batch_id)["draft"]["address"] == "711 Example St"
+        assert capture_of(client, batch_id)["draft"]["address"] == "1301 Example St"
 
 
 def test_extraction_still_geocodes_a_photo_with_no_field_address(client):

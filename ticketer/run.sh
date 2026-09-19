@@ -83,6 +83,23 @@ if [[ -z "$ANTHROPIC_API_KEY" ]]; then
   log "anthropic_api_key is not set: photos will be stored but not extracted"
 fi
 
+# 311 submission. Dry run stays on unless the option says otherwise, so an unconfigured install
+# can never file a real request with the city.
+# options.json holds a JSON boolean, which `opt` prints as True/False; the API compares lowercase.
+TICKETER_SUBMIT_DRY_RUN="${TICKETER_SUBMIT_DRY_RUN:-$(opt submit_dry_run true)}"
+export TICKETER_SUBMIT_DRY_RUN="$(echo "$TICKETER_SUBMIT_DRY_RUN" | tr '[:upper:]' '[:lower:]')"
+TICKETER_ATTACH_PHOTO="${TICKETER_ATTACH_PHOTO:-$(opt attach_photo true)}"
+export TICKETER_ATTACH_PHOTO="$(echo "$TICKETER_ATTACH_PHOTO" | tr '[:upper:]' '[:lower:]')"
+export TICKETER_REPORTER_FIRST_NAME="${TICKETER_REPORTER_FIRST_NAME:-$(opt reporter_first_name "")}"
+export TICKETER_REPORTER_LAST_NAME="${TICKETER_REPORTER_LAST_NAME:-$(opt reporter_last_name "")}"
+export TICKETER_REPORTER_EMAIL="${TICKETER_REPORTER_EMAIL:-$(opt reporter_email "")}"
+export TICKETER_REPORTER_PHONE="${TICKETER_REPORTER_PHONE:-$(opt reporter_phone "")}"
+if [[ "$TICKETER_SUBMIT_DRY_RUN" == "true" ]]; then
+  log "311 submission is in dry run: requests are built and shown, never filed"
+else
+  log "311 submission is LIVE: approved drafts are filed with the city"
+fi
+
 cd /srv
 exec uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" \
   --proxy-headers --forwarded-allow-ips 127.0.0.1

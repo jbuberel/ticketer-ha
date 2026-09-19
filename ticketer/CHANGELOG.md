@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.6.2
+
+- **Requests now carry their photo.** The portal uploads a photo through its own endpoint, separate
+  from the rest of the request; that step has now been captured from a real submission and
+  implemented, so `attach_photo` is on in a fresh install and a request carries its photo.
+- A photo becomes part of the public case record, the same as the plate and address. Turn
+  `attach_photo` off to file text-only requests.
+- If the portal ever changes how it takes uploads, a send now stops and says so rather than
+  filing a request with the photo silently missing.
+
+## 0.6.1
+
+- **The 311 request now matches what the portal itself sends**, checked against a real
+  submission captured from the website rather than worked out from its code.
+  - Vehicle colour, make, model and plate are sent as the form's own separate answers. They were
+    previously written into a description field the portal does not use at all.
+  - The location block now carries the same map details, to the same precision, as the website.
+  - A request filed with your contact details no longer also marks itself anonymous.
+- **Re-run any dry run you looked at before updating**: the request it showed you was not the
+  shape 311 expects.
+- **Attaching the photo doesn't work yet** and is off in a fresh install (`attach_photo`). The
+  portal uploads photos through a separate endpoint that still needs to be captured; with the
+  option on, a real send stops before anything is filed and tells you so. Text-only requests
+  carry the plate, vehicle, address and concern, which is everything the form requires.
+
+## 0.6.0
+
+- **Send requests to Sacramento 311.** A reviewed batch gets a Submit panel listing what would
+  go, and each draft shows what happened to it and its case number.
+- **Dry run is on by default and has to be turned off deliberately** (`submit_dry_run` in the
+  app's Configuration tab). A dry run does every lookup, builds the exact request, and stops:
+  no photo is uploaded and no case is created. Open **What would be sent** on a draft to read
+  the text an officer would see, or **Show the raw request** for the full payload.
+- **New options:** `submit_dry_run`, and `reporter_first_name` / `reporter_last_name` /
+  `reporter_email` / `reporter_phone`. Leave all four names empty to file anonymously; 311 then
+  sends no confirmation email.
+- The photo is uploaded with each request.
+- **What stops a mistake:**
+  - Only drafts you marked **Report** can be sent, and only by the person who captured them.
+  - Approval is pinned to the draft version you were looking at. Edit a draft and the send is
+    refused until you look again.
+  - Requests go one at a time with a pause between them.
+  - **Nothing is ever retried automatically.** If 311 doesn't confirm, the draft is left
+    **unconfirmed** and says so: a case may exist, so check the city's open data before sending
+    it again. Sending an already-sent draft is refused.
+  - A batch with requests at 311 can no longer be deleted; it is the record of what was sent.
+- Addresses are checked against the city's own map before sending. One it can't place, or that
+  is outside Sacramento, is reported instead of being sent as-is.
+- Times in the request text are written in Sacramento local time.
+
 ## 0.5.0
 
 - **The address is worked out as each photo is taken**, not hours later during extraction. It
