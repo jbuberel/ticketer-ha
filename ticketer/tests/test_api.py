@@ -175,3 +175,12 @@ def test_list_batches_newest_first_with_counts(client):
     batches = client.get("/api/batches", headers=ALICE).json()["batches"]
     assert {b["id"]: b["capture_count"] for b in batches} == {mine: 1, theirs: 0}
     assert batches[0]["created_by"] in {"alice@example.com", "bob@example.com"}
+
+
+def test_app_files_are_revalidated_so_a_phone_cannot_run_stale_code(client):
+    """Without this the browser caches app.js heuristically: the home screen reports the new
+    version (that comes from the API) while the page still runs the old JavaScript."""
+    for path in ("/", "/app.js", "/index.html"):
+        r = client.get(path, headers=ALICE)
+        assert r.status_code == 200, path
+        assert "no-cache" in r.headers.get("cache-control", ""), f"{path} may be cached blind"

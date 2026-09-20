@@ -11,6 +11,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
 
+from .tls import verified_context
+
 CITY_311_GEOCODER = (
     "https://utility.arcgis.com/usrsvcs/servers/3f594920d25340bcb7108f137a28cda1/rest/services/World/GeocodeServer"
 )
@@ -82,7 +84,8 @@ class ArcGisReverseGeocoder:
             headers={"User-Agent": "Mozilla/5.0 (ticketer Home Assistant app)"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout,
+                                        context=verified_context()) as response:
                 return json.load(response)
         except (OSError, ValueError) as e:
             raise GeocodeError(f"Geocoder unavailable: {e}") from e

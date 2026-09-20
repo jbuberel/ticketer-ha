@@ -25,6 +25,8 @@ from datetime import datetime
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
+from .tls import verified_context
+
 # Every report is about a Sacramento street, so times are written in the city's own zone
 # whatever the server is set to.
 CITY_TZ = ZoneInfo("America/Los_Angeles")
@@ -196,6 +198,7 @@ def new_session() -> urllib.request.OpenerDirector:
     consent and analytics ones -- but the portal sets them, and sending them back is what a
     browser would do."""
     return urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=verified_context()),
         urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
 

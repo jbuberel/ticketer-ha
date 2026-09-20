@@ -315,6 +315,22 @@ def require_capturing(batch: sqlite3.Row) -> None:
         raise HTTPException(409, f"Batch is {batch['status']} and no longer accepts changes")
 
 
+class AppStatic(StaticFiles):
+    """Serve the app's own files so a phone always checks whether they changed.
+
+    StaticFiles sends no Cache-Control, which lets a browser cache /app.js heuristically and use
+    it for hours without asking. The home screen still shows the new version -- that comes from
+    the API, which is never cached -- so the app looks updated while running the old code, and a
+    feature added in the update appears to be missing. (v0.3.2 hit the same thing with stale
+    plate close-ups.) ETags keep the cost to one 304 per file per load.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
 def create_app(settings: Settings | None = None, pipeline: Pipeline | None = None,
                sac311: Sac311Portal | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
@@ -694,7 +710,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             raise HTTPException(404, "No plate close-up for this photo")
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.mount("/", AppStatic(directory=STATIC_DIR, html=True), name="static")
     return app
 
 

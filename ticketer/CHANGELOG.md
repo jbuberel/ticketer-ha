@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.4
+
+- **311 submissions failed with a certificate error.** The city's portal sends only its own
+  certificate and leaves out the one that signs it, so nothing could verify the connection and
+  every request stopped before it was sent. The missing certificate now ships with the app.
+  Requests that failed this way can simply be sent again; nothing was filed.
+- **The app could keep running old code after an update.** The home screen showed the new
+  version while the page itself was still the cached previous one, which is why the Send button
+  looked missing in 0.6.3. The app's files are now re-checked on each load.
+- After updating, if anything still looks like the old version, close the app and open it again.
+
 ## 0.6.3
 
 - **The Send button was easy to miss.** It sat above the photos, so after deciding the last
