@@ -630,6 +630,16 @@ async function deleteBatch(batch) {
   navigate("#/");
 }
 
+// What became of this batch's requests, in the order worth hearing it.
+const SUBMISSION_SUMMARY = [
+  ["sent", (n) => `${plural(n, "request")} sent to 311`],
+  ["sending", (n) => `${n} sending`],
+  ["queued", (n) => `${n} waiting to send`],
+  ["unknown", (n) => `${n} unconfirmed`],
+  ["failed", (n) => `${n} not sent`],
+  ["prepared", (n) => `${plural(n, "dry run")}, nothing sent`],
+];
+
 function reviewSummary(batch, canReview) {
   const decisions = batch.captures.map((c) => c.draft?.review.decision);
   const report = decisions.filter((d) => d === "report").length;
@@ -639,8 +649,32 @@ function reviewSummary(batch, canReview) {
   if (!canReview) {
     return notice("info", `${counts} · ${undecided} undecided. Only ${batch.created_by_name || batch.created_by} can review this batch.`);
   }
-  return h("div", { class: `notice ${undecided ? "" : "ok"}` },
-    h("div", {}, h("strong", {}, undecided ? `${plural(undecided, "draft")} to review` : "All drafts reviewed"), ` · ${counts}`),
+
+  // Once anything has been sent, what happened to it is the news. The review tally is not:
+  // it goes on saying "1 to report" about a request that 311 already has.
+  const statuses = batch.captures.map((c) => c.submission?.status).filter(Boolean);
+  const done = SUBMISSION_SUMMARY
+    .map(([status, phrase]) => [statuses.filter((s) => s === status).length, phrase])
+    .filter(([n]) => n)
+    .map(([n, phrase]) => phrase(n));
+  const cases = batch.captures.map((c) => c.submission?.case_number).filter(Boolean);
+
+  // Reported drafts 311 has not been told about at all: a failed one is already counted above.
+  const unsent = batch.captures.filter((c) => c.draft?.review.decision === "report" && !c.submission).length;
+  const headline = [
+    ...(undecided ? [`${plural(undecided, "draft")} to review`] : []),
+    ...done,
+    ...(done.length && unsent ? [`${unsent} still to send`] : []),
+  ];
+  const bad = statuses.some((s) => s === "failed" || s === "unknown");
+  const settled = !undecided && !unsent && (!done.length || statuses.every((s) => s === "sent"));
+  const kind = bad ? "warn" : settled ? "ok" : "";
+  return h("div", { class: `notice ${kind}` },
+    h("div", {}, h("strong", {}, headline.length ? headline.join(" · ") : "All drafts reviewed"),
+      done.length ? null : ` · ${counts}`),
+    cases.length
+      ? h("div", { class: "small" }, `${cases.length > 1 ? "Case numbers" : "Case number"}: ${cases.join(", ")}`)
+      : null,
     undecided ? h("div", { class: "small" }, "Choose Report or Don't report for each photo. Edit anything that's wrong first.") : null);
 }
 

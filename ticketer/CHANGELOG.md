@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.6
+
+- **The batch heading now says what happened to the requests.** It used to go on reading
+  "1 to report" about a request 311 already had. It now reads "1 request sent to 311", and says
+  how many are still waiting, still to send, or didn't go.
+- **Case numbers are shown at the top of the batch**, not only on each photo, so you can note
+  them without scrolling. (Each photo has always shown its own case number once sent.)
+
 ## 0.6.5
 
 - **The app now says how to send for real.** With dry run on, the Submit panel gives the exact
