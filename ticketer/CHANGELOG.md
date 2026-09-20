@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.5
+
+- **The app now says how to send for real.** With dry run on, the Submit panel gives the exact
+  path: Home Assistant \u2192 Settings \u2192 Add-ons \u2192 Ticketer \u2192 Configuration, turn off
+  `submit_dry_run`, save, restart. The setting was always there, but nothing in the app said so,
+  which made it look as though the app simply couldn't file anything.
+- A request filed anonymously now also says which settings to fill in to be named.
+
 ## 0.6.4
 
 - **311 submissions failed with a certificate error.** The city's portal sends only its own

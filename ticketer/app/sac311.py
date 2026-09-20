@@ -510,7 +510,7 @@ class Sac311Portal:
             case["Contact"] = contact  # the portal omits Anonymous_Contact__c entirely in this case
         else:
             case["Anonymous_Contact__c"] = True
-            warnings.append("Filed anonymously: 311 will not send a confirmation email")
+            warnings.append("Filed anonymously: 311 will not send a confirmation email. To be named, set reporter_first_name, reporter_last_name and reporter_email in the app's Configuration tab.")
         return PreparedCase(case_record=case, summary=describe(report),
                             matched_address=case["Address__c"], lat=lat, lon=lon,
                             council_district=council, warnings=warnings)

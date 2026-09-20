@@ -204,7 +204,9 @@ def test_prepare_without_contact_details_files_anonymously():
     prepared = StubPortal().prepare(REPORT, Reporter())
     assert prepared.case_record["Anonymous_Contact__c"] is True
     assert "Contact" not in prepared.case_record
-    assert any("anonymously" in w for w in prepared.warnings)
+    warning = next(w for w in prepared.warnings if "anonymously" in w)
+    # The setting is in the add-on's options, which the phone can't reach: say where it is.
+    assert "reporter_first_name" in warning and "Configuration" in warning
 
 
 def test_prepare_fails_when_the_form_stops_asking_for_the_vehicle():

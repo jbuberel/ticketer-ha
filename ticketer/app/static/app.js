@@ -583,7 +583,12 @@ function submitPanel(batch, me) {
     h("div", {}, h("strong", {}, `${plural(sendable.length, "request")} ready to send`),
       sent.length ? ` · ${sent.length} already sent` : ""),
     h("div", { class: "small" }, dryRun
-      ? "Dry run is on: this builds the exact request and shows it to you without sending anything to 311."
+      ? h("span", {}, "Dry run is on: this builds the exact request and shows it to you without sending anything to 311. ",
+          // The switch lives in the add-on's own options, which you can't reach from here -- so
+          // say where it is. Without this the app looks as though it simply cannot send.
+          h("strong", {}, "To file for real"),
+          ": in Home Assistant, Settings \u2192 Add-ons \u2192 Ticketer \u2192 Configuration, turn off ",
+          h("code", {}, "submit_dry_run"), ", save, then restart the app.")
       : `These go to Sacramento 311 as ${me.reporter === "anonymous" ? "an anonymous report" : me.reporter}, with the photo attached. A parking officer is dispatched.`),
     h("button", { class: `button ${dryRun ? "subtle" : "primary"}`, disabled: submitting,
       onclick: () => submitDrafts(batch, sendable, dryRun) },
