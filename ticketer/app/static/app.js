@@ -551,8 +551,10 @@ function batchContent(batch, me) {
     drafts.error ? h("div", { class: "notice error" },
       `${plural(drafts.error, "photo")} couldn't be extracted.`,
       h("button", { class: "button subtle inline", onclick: () => retryExtraction(batch.id) }, "Retry failed")) : null,
-    batch.status === "ready" && canReview ? submitPanel(batch, me) : null,
     h("ul", { class: "photos" }, batch.captures.map((capture, index) => draftCard(capture, index, { batch, canReview }))),
+    // Below the photos, not above them: you reach this having just decided the last draft, and
+    // the send button should be where your thumb already is rather than a scroll back up.
+    batch.status === "ready" && canReview ? submitPanel(batch, me) : null,
     batch.status === "ready" && drafts.done && canReview
       ? h("button", { class: "button subtle", onclick: () => rerunBatch(batch) }, "Re-run extraction")
       : null,

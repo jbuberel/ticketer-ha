@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.3
+
+- **The Send button was easy to miss.** It sat above the photos, so after deciding the last
+  draft you were at the bottom of the batch with nothing in sight to press. It now sits directly
+  below the photos, where you finish reviewing.
+
 ## 0.6.2
 
 - **Requests now carry their photo.** The portal uploads a photo through its own endpoint, separate
