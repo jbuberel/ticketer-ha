@@ -1,6 +1,6 @@
 # https://developers.home-assistant.io/docs/apps/configuration#app-configuration
 name: Ticketer
-version: "0.6.6"
+version: "0.7.0"
 slug: ticketer
 description: Phone-captured parking reports, reviewed by you, then filed with Sacramento 311
 url: "https://github.com/jbuberel/ticketer-ha"
@@ -24,6 +24,11 @@ options:
   # Send the photo with each request. A photo makes a response more likely, and becomes part
   # of the public case record along with the rest of the request.
   attach_photo: true
+  # How long photos, plates and drafts are kept before the app deletes them. A vehicle is parked
+  # for six to eight hours at most, so a report not sent within eight is no longer worth sending;
+  # the city auto-closes a request it hasn't acted on within a day. Whichever falls later wins.
+  retain_unsubmitted_hours: 8
+  retain_submitted_hours: 24
 schema:
   tailscale_auth_key: "password?"
   tailscale_hostname: "str"
@@ -32,6 +37,9 @@ schema:
   extractor_model: "str"
   submit_dry_run: "bool"
   attach_photo: "bool"
+  # Retention can be lengthened or shortened but not turned off: 1 hour to 7 days.
+  retain_unsubmitted_hours: "int(1,168)"
+  retain_submitted_hours: "int(1,168)"
   # Who the request is filed as. Leave all four empty to file anonymously; 311 then sends no
   # confirmation email.
   reporter_first_name: "str?"

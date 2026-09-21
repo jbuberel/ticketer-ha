@@ -107,7 +107,8 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
 To take out a bad shot, tap **✕** on it; **Discard session** throws the whole session away.
 To get rid of a finished batch, for example test photos, open it and tap **Delete batch** at the
 bottom. This permanently removes its photos, close-ups and drafts from the server. A batch with
-requests already at 311 can't be deleted.
+requests already at 311 can't be deleted by hand — it stays as the record of what was sent, and
+retention removes it a day later.
 If the app is closed or the page reloads mid-session, reopening it resumes the session.
 
 ## Your data
@@ -124,10 +125,42 @@ If the app is closed or the page reloads mid-session, reopening it resumes the s
     has no address yet.
   - The local plate reader runs on this server.
   - When you submit, the request goes to **Sacramento 311**: the plate, vehicle colour, make
-    and model, the address, and your contact details if you set them. Photos are not sent yet.
-    The city's own map details for that address travel with it, as they do from the website —
-    including who owns the parcel. Everything in a submitted request becomes a city record.
-- Nothing is deleted automatically yet.
+    and model, the address, the photo if `attach_photo` is on, and your contact details if you
+    set them. The city's own map details for that address travel with it, as they do from the
+    website — including who owns the parcel. Everything in a submitted request becomes a city
+    record, and stays with the city on their own terms whatever this app deletes.
+
+### How long it is kept
+
+The app deletes batches on its own. A photo of a car parked where it shouldn't be is worth
+something for a few hours; after that it is a picture of a stranger's car with their plate next
+to it, and there is nothing left to do with it.
+
+Two clocks, whichever falls later:
+
+| | Default | Option |
+|---|---|---|
+| After the last photo of a session arrived | 8 hours | `retain_unsubmitted_hours` |
+| After a request was really filed with 311 | 24 hours | `retain_submitted_hours` |
+
+Eight hours because these vehicles are parked for six to eight at most: a report you haven't
+sent by then can no longer be sent usefully, because the car has gone. Twenty-four because the
+city auto-closes a request it hasn't acted on within a day.
+
+When a batch goes, its photos, plate close-ups, drafts, locations and submission payloads go
+with it. A session left open on a phone expires the same way. A request still being sent holds
+its batch back until it finishes.
+
+Each batch shows how long it has left, and a batch in its last hour with something still
+undecided or unsent says so at the top. **If you want a report filed, send it before then.**
+
+What survives is one line per request that really reached 311: the case number, whether it was
+confirmed, and when. That is enough to look the case up on the city's site or in their open
+data. It holds no plate, no address, no photo and none of the request payload. These appear
+under **Filed cases** on the home screen.
+
+Both windows can be changed in Configuration, between 1 hour and 7 days. Retention can't be
+turned off.
 
 ## Troubleshooting
 

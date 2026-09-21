@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS batches (
@@ -103,11 +103,32 @@ CREATE TABLE IF NOT EXISTS submissions (
 
 CREATE INDEX IF NOT EXISTS submissions_by_status ON submissions (status, created_at);
 CREATE INDEX IF NOT EXISTS submissions_by_capture ON submissions (capture_id, created_at);
+
+-- What survives retention deleting a batch that was really filed (schema v5 -> v6): enough to
+-- follow the case in the city's public layer, and nothing else. Deliberately no foreign key --
+-- the rows whose id this holds are gone -- and deliberately none of the payload, description or
+-- warnings, which carry the plate, the address and a neighbour's name and mailing address.
+CREATE TABLE IF NOT EXISTS cases (
+    submission_id  TEXT PRIMARY KEY,
+    case_number    TEXT,               -- the city's ReferenceNumber, NULL when the send was uncertain
+    case_id        TEXT,
+    status         TEXT NOT NULL,      -- sent | unknown, as the submission ended
+    photo_attached INTEGER NOT NULL DEFAULT 0,
+    requested_by   TEXT NOT NULL,
+    filed_at       TEXT NOT NULL,
+    purged_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS cases_by_filed ON cases (filed_at);
 """
 
 # A real submission in one of these states means a case may exist at the city. The draft can't be
 # sent again, and its batch can't be deleted, while any of them stands.
 LIVE_SUBMISSION_STATUSES = ("queued", "sending", "sent", "unknown")
+
+# Still on its way out. Retention leaves a batch alone while one of these stands, so a purge
+# can't delete the photo the submitter is in the middle of uploading.
+IN_FLIGHT_SUBMISSION_STATUSES = ("queued", "sending")
 
 # Address columns on captures (v4), settled on the phone while the photo is taken so the address
 # doesn't have to be remembered back home. When set, the extraction worker uses these instead of

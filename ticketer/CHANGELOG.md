@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.0
+
+- **Batches are now deleted automatically.** Until now nothing was ever removed unless you
+  tapped Delete batch, so photos and plates piled up in the app's data folder indefinitely.
+  A session is deleted 8 hours after its last photo, or 24 hours after a request from it was
+  filed with 311 — whichever falls later. Photos, plate close-ups, drafts, locations and the
+  submitted payload all go.
+  - 8 hours because these vehicles are parked for six to eight at most: after that the car has
+    gone and the report can no longer be sent usefully. 24 because the city auto-closes a
+    request it hasn't acted on within a day.
+  - Both windows are in Configuration (`retain_unsubmitted_hours`, `retain_submitted_hours`),
+    between 1 hour and 7 days. Retention can't be switched off.
+  - **On first start this deletes everything already past its window**, including test batches
+    from earlier versions. Send anything you still mean to report before updating.
+- **Each batch now shows how long it has left**, and a batch in its final hour with a draft
+  still undecided or unsent says so at the top of the batch. A request still being sent holds
+  its batch back until it finishes.
+- **Filed cases** on the home screen lists requests whose batch has since been deleted: the case
+  number, whether it was confirmed, and when it was filed — enough to look the case up with the
+  city. No plate, no address, no photo, none of the payload.
+- The Your data section of the documentation now describes retention, and no longer says photos
+  aren't sent to 311. They have been since 0.6.2, when `attach_photo` is on.
+
 ## 0.6.6
 
 - **The batch heading now says what happened to the requests.** It used to go on reading

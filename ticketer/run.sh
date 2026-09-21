@@ -94,11 +94,17 @@ export TICKETER_REPORTER_FIRST_NAME="${TICKETER_REPORTER_FIRST_NAME:-$(opt repor
 export TICKETER_REPORTER_LAST_NAME="${TICKETER_REPORTER_LAST_NAME:-$(opt reporter_last_name "")}"
 export TICKETER_REPORTER_EMAIL="${TICKETER_REPORTER_EMAIL:-$(opt reporter_email "")}"
 export TICKETER_REPORTER_PHONE="${TICKETER_REPORTER_PHONE:-$(opt reporter_phone "")}"
+
 if [[ "$TICKETER_SUBMIT_DRY_RUN" == "true" ]]; then
   log "311 submission is in dry run: requests are built and shown, never filed"
 else
   log "311 submission is LIVE: approved drafts are filed with the city"
 fi
+
+# Retention. Photos, plates and drafts are deleted on whichever of these two clocks falls later.
+export TICKETER_RETAIN_UNSUBMITTED_HOURS="${TICKETER_RETAIN_UNSUBMITTED_HOURS:-$(opt retain_unsubmitted_hours 8)}"
+export TICKETER_RETAIN_SUBMITTED_HOURS="${TICKETER_RETAIN_SUBMITTED_HOURS:-$(opt retain_submitted_hours 24)}"
+log "retention: ${TICKETER_RETAIN_UNSUBMITTED_HOURS} h unsubmitted, ${TICKETER_RETAIN_SUBMITTED_HOURS} h after filing"
 
 cd /srv
 exec uvicorn app.main:app --host "$API_HOST" --port "$API_PORT" \

@@ -26,6 +26,7 @@ from .db import LIVE_SUBMISSION_STATUSES, Database
 from .extract import ClaudeExtractor
 from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder, GeocodeError, nearby_addresses
 from .plates import FastAlprReader, normalize_plate
+from .retention import Reaper, RetentionPolicy, expires_at
 from .sac311 import Reporter, Sac311Portal
 from .submit import SubmitConfig, Submitter, queue
 from .worker import Pipeline, Worker, plate_crop_path
@@ -59,10 +60,17 @@ class Settings:
     reporter_last_name: str | None = None
     reporter_email: str | None = None
     reporter_phone: str | None = None
+    # How long photos, plates and drafts are kept. See retention.py for what the two clocks mean.
+    retain_unsubmitted_hours: int = 8
+    retain_submitted_hours: int = 24
 
     def reporter(self) -> Reporter:
         return Reporter(first_name=self.reporter_first_name, last_name=self.reporter_last_name,
                         email=self.reporter_email, phone=self.reporter_phone)
+
+    def retention(self) -> RetentionPolicy:
+        return RetentionPolicy(unsubmitted_hours=self.retain_unsubmitted_hours,
+                               submitted_hours=self.retain_submitted_hours)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -78,7 +86,16 @@ class Settings:
             reporter_last_name=os.environ.get("TICKETER_REPORTER_LAST_NAME") or None,
             reporter_email=os.environ.get("TICKETER_REPORTER_EMAIL") or None,
             reporter_phone=os.environ.get("TICKETER_REPORTER_PHONE") or None,
+            retain_unsubmitted_hours=int_env("TICKETER_RETAIN_UNSUBMITTED_HOURS", 8),
+            retain_submitted_hours=int_env("TICKETER_RETAIN_SUBMITTED_HOURS", 24),
         )
+
+
+def int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError):
+        return default
 
 
 def default_pipeline(settings: Settings) -> Pipeline:
@@ -280,7 +297,8 @@ def capture_json(row: sqlite3.Row) -> dict:
     return out
 
 
-def batch_json(conn: sqlite3.Connection, row: sqlite3.Row, with_captures: bool = False) -> dict:
+def batch_json(conn: sqlite3.Connection, row: sqlite3.Row, policy: RetentionPolicy,
+               with_captures: bool = False) -> dict:
     captures = conn.execute(CAPTURES_WITH_DRAFTS, (row["id"],)).fetchall()
     counts = {"pending": 0, "done": 0, "error": 0}
     review = {"report": 0, "skip": 0, "undecided": 0}
@@ -292,7 +310,10 @@ def batch_json(conn: sqlite3.Connection, row: sqlite3.Row, with_captures: bool =
             review[capture["d_decision"] or "undecided"] += 1
         cost += capture["d_cost_usd"] or 0.0
     out = dict(row) | {"capture_count": len(captures), "drafts": counts, "review": review,
-                       "cost_usd": round(cost, 4)}
+                       "cost_usd": round(cost, 4),
+                       # When retention deletes this batch. Shown on the phone so a session that
+                       # is about to go doesn't just vanish between one look and the next.
+                       "expires_at": expires_at(conn, row["id"], policy)}
     if with_captures:
         out["captures"] = [capture_json(c) for c in captures]
     return out
@@ -341,6 +362,8 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     submitter = Submitter(db, settings.data_dir, sac311 or Sac311Portal(),
                           SubmitConfig(reporter=settings.reporter(), dry_run=settings.submit_dry_run,
                                        attach_photo=settings.attach_photo))
+    retention = settings.retention()
+    reaper = Reaper(db, photos_dir, retention)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -349,16 +372,19 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         if settings.run_worker:
             worker.start()
             submitter.start()
+            reaper.start()  # sweeps immediately, so a restart catches up on anything overdue
         try:
             yield
         finally:
             worker.stop()
             submitter.stop()
+            reaper.stop()
 
     app = FastAPI(title="Ticketer", version=VERSION, lifespan=lifespan)
     app.state.db = db
     app.state.worker = worker
     app.state.submitter = submitter
+    app.state.reaper = reaper
 
     def current_user(request: Request) -> User:
         # Tailscale Serve sets these headers; the API itself only listens on localhost.
@@ -378,9 +404,22 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         return {"version": VERSION, "server_time": utc_now(), "user_login": user.login,
                 "user_name": user.name, "extraction_enabled": worker.extraction_enabled,
                 "submit_dry_run": settings.submit_dry_run,
+                "retention": {"unsubmitted_hours": retention.unsubmitted_hours,
+                              "submitted_hours": retention.submitted_hours},
                 "reporter": "anonymous" if settings.reporter().anonymous else
                             " ".join(filter(None, (settings.reporter_first_name, settings.reporter_last_name)))
                             or settings.reporter_email}
+
+    @app.get("/api/cases")
+    def list_cases(user: CurrentUser, limit: int = 50) -> dict:
+        """Requests that were really filed and whose batch retention has since deleted. All that
+        is left of each is the case number, so it can still be looked up in the city's public
+        layer -- no plate, no address, no photo."""
+        with db.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM cases ORDER BY filed_at DESC LIMIT ?", (min(limit, 200),)
+            ).fetchall()
+        return {"cases": [dict(row) | {"photo_attached": bool(row["photo_attached"])} for row in rows]}
 
     @app.get("/api/geocode")
     def reverse_geocode(
@@ -416,7 +455,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                 if batch["created_by"] != user.login:
                     raise HTTPException(409, "Batch id already in use")
                 response.status_code = 200
-            return batch_json(conn, batch)
+            return batch_json(conn, batch, retention)
 
     @app.get("/api/batches")
     def list_batches(user: CurrentUser, limit: int = 50) -> dict:
@@ -424,12 +463,12 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             rows = conn.execute(
                 "SELECT * FROM batches ORDER BY created_at DESC LIMIT ?", (min(limit, 200),)
             ).fetchall()
-            return {"batches": [batch_json(conn, row) for row in rows]}
+            return {"batches": [batch_json(conn, row, retention) for row in rows]}
 
     @app.get("/api/batches/{batch_id}")
     def get_batch_detail(batch_id: uuid.UUID, user: CurrentUser) -> dict:
         with db.connect() as conn:
-            return batch_json(conn, get_batch(conn, batch_id), with_captures=True)
+            return batch_json(conn, get_batch(conn, batch_id), retention, with_captures=True)
 
     @app.delete("/api/batches/{batch_id}", status_code=204)
     def discard_batch(batch_id: uuid.UUID, user: CurrentUser) -> None:
@@ -570,7 +609,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                     (utc_now(), str(batch_id)),
                 )
                 batch = get_batch(conn, batch_id)
-            result = batch_json(conn, batch, with_captures=True)
+            result = batch_json(conn, batch, retention, with_captures=True)
         worker.wake()
         return result
 
@@ -581,7 +620,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             require_owner(get_batch(conn, batch_id), user)  # clears review decisions
         worker.retry(str(batch_id), include_done=rerun_all)
         with db.connect() as conn:
-            return batch_json(conn, get_batch(conn, batch_id), with_captures=True)
+            return batch_json(conn, get_batch(conn, batch_id), retention, with_captures=True)
 
     @app.patch("/api/batches/{batch_id}/captures/{capture_id}/draft")
     def review_draft(batch_id: uuid.UUID, capture_id: uuid.UUID, body: DraftUpdate, user: CurrentUser) -> dict:
@@ -666,7 +705,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         submitter.wake()
         with db.connect() as conn:
             return {"queued": len(queued), "dry_run": dry_run,
-                    "batch": batch_json(conn, get_batch(conn, batch_id), with_captures=True)}
+                    "batch": batch_json(conn, get_batch(conn, batch_id), retention, with_captures=True)}
 
     @app.get("/api/batches/{batch_id}/submissions/{submission_id}")
     def get_submission(batch_id: uuid.UUID, submission_id: uuid.UUID, user: CurrentUser) -> dict:

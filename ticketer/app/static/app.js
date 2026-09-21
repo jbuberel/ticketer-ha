@@ -39,6 +39,25 @@ const fmtDateTime = (iso) => new Date(iso).toLocaleString([], {
 });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// How long a batch has before retention deletes it, photos and all. Rounded down, so "2 h" never
+// means two hours and fifty minutes: a batch goes no later than this says. Null once it is due.
+function fmtLeft(iso) {
+  const minutes = iso ? Math.floor((new Date(iso) - Date.now()) / 60000) : 0;
+  if (minutes <= 0) return null;
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours} h` : `${Math.floor(hours / 24)} d`;
+}
+
+const EXPIRY_WARN_MS = 3600000; // the last hour, when a draft is worth deciding now or not at all
+
+const expiryChip = (iso) => {
+  if (!iso) return null;
+  const left = fmtLeft(iso);
+  return chip(left ? `${left} left` : "deleting now",
+              new Date(iso) - Date.now() < EXPIRY_WARN_MS ? "warn" : "");
+};
+
 let toastTimer = null;
 function showError(message) {
   toast.textContent = message;
@@ -160,10 +179,33 @@ async function renderHome() {
     list.replaceChildren(...(batches.length
       ? batches.map((b) => h("a", { class: "batch", href: `#/batch/${b.id}` },
         h("span", {}, h("strong", {}, fmtDateTime(b.created_at)), h("span", { class: "muted" }, ` · ${b.created_by_name || b.created_by}`)),
-        h("span", {}, `${plural(b.capture_count, "photo")} `, batchChip(b))))
+        h("span", {}, `${plural(b.capture_count, "photo")} `, batchChip(b), " ", expiryChip(b.expires_at))))
       : [h("p", { class: "muted" }, "No batches yet.")]));
   } catch (error) {
     list.replaceChildren(notice("error", `Couldn't load batches: ${error.message}`));
+  }
+  renderCases();
+}
+
+// Requests that were really filed and whose batch retention has since deleted. Only the case
+// number is left, which is what the city's public status page and open data are looked up by.
+async function renderCases() {
+  const me = await whoami;
+  const hours = me.retention;
+  try {
+    const { cases } = await api("GET", "/api/cases");
+    if (!cases.length || view.dataset.view !== "home") return; // navigated away while loading
+    view.append(h("section", {},
+      h("h2", {}, "Filed cases"),
+      h("p", { class: "muted small" }, hours
+        ? `Batches are deleted ${hours.unsubmitted_hours} h after the last photo, or ${hours.submitted_hours} h after being filed. These case numbers are all that is kept.`
+        : "These case numbers are all that is kept of deleted batches."),
+      h("div", { class: "batches" }, cases.map((c) => h("div", { class: "batch" },
+        h("span", {}, h("strong", {}, c.case_number || "no case number"),
+          h("span", { class: "muted" }, ` · ${fmtDateTime(c.filed_at)}`)),
+        c.status === "unknown" ? chip("unconfirmed", "warn") : chip("filed", "ok"))))));
+  } catch {
+    // The ledger is a footnote on this screen; a failure here shouldn't bury the batch list.
   }
 }
 
@@ -520,6 +562,12 @@ async function renderBatch(id) {
   }
 }
 
+// An hour or less left, and there is still something undecided or unsent to lose.
+function expiringSoon(batch) {
+  if (!batch.expires_at || new Date(batch.expires_at) - Date.now() > EXPIRY_WARN_MS) return false;
+  return batch.review.undecided > 0 || batch.captures.some(SENDABLE);
+}
+
 function batchChip(batch) {
   if (batch.status !== "ready") return chip(batch.status, batch.status);
   return batch.review.undecided ? chip(`${batch.review.undecided} to review`, "warn") : chip("reviewed", "ok");
@@ -546,8 +594,14 @@ function batchContent(batch, me) {
   return [
     h("header", {},
       h("h1", {}, fmtDateTime(batch.created_at)),
-      h("p", { class: "muted" }, `${plural(batch.capture_count, "photo")} · ${batch.created_by_name || batch.created_by}${cost}`)),
+      h("p", { class: "muted" }, `${plural(batch.capture_count, "photo")} · ${batch.created_by_name || batch.created_by}${cost} `,
+        expiryChip(batch.expires_at))),
     status,
+    // Said plainly rather than left to the chip: this is the one place where the app throws
+    // away work, and a draft that is about to expire is a draft worth deciding now.
+    expiringSoon(batch) ? notice("warn", `These photos and drafts are deleted ${
+      fmtLeft(batch.expires_at) ? `in ${fmtLeft(batch.expires_at)}` : "any moment now"
+    }. Send anything you mean to report before then.`) : null,
     drafts.error ? h("div", { class: "notice error" },
       `${plural(drafts.error, "photo")} couldn't be extracted.`,
       h("button", { class: "button subtle inline", onclick: () => retryExtraction(batch.id) }, "Retry failed")) : null,
