@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1
+
+- **The address picker only offers real neighbours.** Stepping by two house numbers from the
+  matched address could land on a number with no building there — a driveway, a lot split, or
+  another gap — and offer it as if it were a real house to pick from. Each neighbour is now
+  checked against the city's own parcel data before it's shown, and the search looks further out
+  when the nearest guesses turn out to be gaps, instead of giving up after the first miss.
+
 ## 0.7.0
 
 - **Batches are now deleted automatically.** Until now nothing was ever removed unless you
