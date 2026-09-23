@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .db import LIVE_SUBMISSION_STATUSES, Database
 from .extract import ClaudeExtractor
-from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder, GeocodeError, nearby_addresses
+from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder, GeocodeError, verified_candidates
 from .plates import FastAlprReader, normalize_plate
 from .retention import Reaper, RetentionPolicy, expires_at
 from .sac311 import Reporter, Sac311Portal
@@ -439,7 +439,8 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
         if address is None:
             return {"address": None, "candidates": []}
         return {"address": address.street, "address_full": address.full, "address_match": address.match_type,
-                "address_distance_m": address.distance_m, "candidates": nearby_addresses(address.street)}
+                "address_distance_m": address.distance_m,
+                "candidates": verified_candidates(pipeline.geocoder, address)}
 
     @app.post("/api/batches", status_code=201)
     def create_batch(body: BatchCreate, user: CurrentUser, response: Response) -> dict:

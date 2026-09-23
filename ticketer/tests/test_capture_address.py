@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 
-from app.geocode import GeocodeError, nearby_addresses
+from app.geocode import Address, GeocodeError, verified_candidates
 from test_api import ALICE, BOB, jpeg, new_batch, upload
 from test_extraction import FakeExtractor, FakeGeocoder, drain, extraction, get, make_client  # noqa: F401
 
@@ -22,6 +22,11 @@ def capture_of(client, batch_id) -> dict:
     return get(client, batch_id)["captures"][0]
 
 
+def addr(street: str) -> Address:
+    return Address(street=street, full=street, city="Sacramento", postal=None,
+                   match_type="PointAddress", lat=0.0, lon=0.0, distance_m=0.0)
+
+
 @pytest.mark.parametrize("street, expected", [
     # Stepping by 2 keeps the same side of the street; the block boundary is not crossed.
     ("1211 Example St", ["1207 Example St", "1209 Example St", "1211 Example St",
@@ -30,8 +35,16 @@ def capture_of(client, batch_id) -> dict:
     ("1211A Example St", ["1211A Example St"]),  # no plain house number to step
     ("Example St", ["Example St"]),
 ])
-def test_nearby_addresses(street, expected):
-    assert nearby_addresses(street) == expected
+def test_verified_candidates_with_no_gaps(street, expected):
+    assert verified_candidates(FakeGeocoder(), addr(street)) == expected
+
+
+def test_verified_candidates_skips_gaps_to_keep_looking():
+    # 1209 and 1213 (the first guess either side of the match) have no parcel; the search keeps
+    # going outward until it finds two real neighbours per side, without crossing the block.
+    geocoder = FakeGeocoder(missing_numbers=frozenset({1209, 1213}))
+    assert verified_candidates(geocoder, addr("1211 Example St")) == [
+        "1205 Example St", "1207 Example St", "1211 Example St", "1215 Example St", "1217 Example St"]
 
 
 def test_geocode_offers_the_match_and_its_neighbours(client):
@@ -52,6 +65,18 @@ def test_geocode_reports_a_failing_geocoder(make_client):  # noqa: F811
     with make_client(FakeExtractor(), geocoder=FakeGeocoder(error=GeocodeError("Geocoder unavailable"))) as client:
         r = client.get("/api/geocode", params={"lat": 37.7749, "lon": -122.4194}, headers=ALICE)
     assert r.status_code == 502 and "Geocoder unavailable" in r.json()["detail"]
+
+
+def test_geocode_only_offers_neighbours_that_are_real_parcels(make_client):  # noqa: F811
+    # 102 Example St steps arithmetically from the match but has no building on it -- a gap the
+    # geocoder's own parcel data doesn't back. It's skipped rather than offered, and the search
+    # keeps going past it to still find two real neighbours on that side.
+    geocoder = FakeGeocoder(missing_numbers=frozenset({102}))
+    with make_client(FakeExtractor(), geocoder=geocoder) as client:
+        r = client.get("/api/geocode", params={"lat": 37.7749, "lon": -122.4194}, headers=ALICE)
+    assert r.status_code == 200, r.text
+    # The matched address is always kept even though it isn't re-verified.
+    assert r.json()["candidates"] == ["100 Example St", "104 Example St", "106 Example St"]
 
 
 def test_upload_keeps_the_address_settled_on_the_street(client):

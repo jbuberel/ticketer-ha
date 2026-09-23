@@ -1,5 +1,7 @@
 """Extraction worker tests with a fake extractor, plate reader and geocoder (no network, no models)."""
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -44,8 +46,9 @@ class FakePlates:
 
 
 class FakeGeocoder:
-    def __init__(self, error=None):
+    def __init__(self, error=None, missing_numbers: frozenset[int] = frozenset()):
         self.error = error
+        self.missing_numbers = missing_numbers  # house numbers with no parcel, e.g. a driveway gap
 
     def reverse(self, lat, lon):
         if self.error:
@@ -53,6 +56,12 @@ class FakeGeocoder:
         return Address(street="100 Example St", full="100 Example St, Sacramento, California, 95814",
                        city="Sacramento", postal="95814", match_type="PointAddress",
                        lat=lat, lon=lon + 0.0001, distance_m=8.7)
+
+    def is_real_address(self, street, city=None):
+        if self.error:
+            raise self.error
+        number = int(re.match(r"(\d+)", street)[1])
+        return number not in self.missing_numbers
 
 
 @pytest.fixture
