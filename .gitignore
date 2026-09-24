@@ -4,3 +4,5 @@ __pycache__/
 .DS_Store
 # Local runs mount a data dir; it holds Tailscale state and (later) photos
 data/
+# Fetched by ticketer/vendor.py, pinned by checksum; not committed
+ticketer/app/static/vendor/

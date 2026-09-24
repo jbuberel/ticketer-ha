@@ -596,6 +596,8 @@ function batchContent(batch, me) {
       h("h1", {}, fmtDateTime(batch.created_at)),
       h("p", { class: "muted" }, `${plural(batch.capture_count, "photo")} · ${batch.created_by_name || batch.created_by}${cost} `,
         expiryChip(batch.expires_at))),
+    // The same batch on the Ionic prototype, for comparing the two designs side by side.
+    h("a", { class: "small", href: `/review.html#/batch/${encodeURIComponent(batch.id)}` }, "Try the new review screen →"),
     status,
     // Said plainly rather than left to the chip: this is the one place where the app throws
     // away work, and a draft that is about to expire is a draft worth deciding now.

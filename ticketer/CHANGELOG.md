@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0
+
+- **A preview of a redesigned batch screen.** Each batch now has a "Try the new review screen"
+  link under its heading. It opens the same batch built with Ionic, which looks like an iPhone app
+  on the iPhone and like an Android app on the Pixel. Everything works the same way: Report and
+  Don't report, the plate check before reporting, and Send with its confirmation. The existing
+  screen is unchanged, and "Classic view" at the top of the new one goes back to it.
+  - Report and Don't report are now two full-width buttons, with Edit beside the plate.
+  - Editing opens a sheet with the photo and plate close-up above the fields, so they stay in
+    view while you correct them.
+  - Pull down to refresh the batch.
+- Ionic and lit-html are served by the app itself, pinned to one version and checked against the
+  published checksum when the image is built. The phone still loads nothing from outside the
+  tailnet.
+
 ## 0.7.1
 
 - **The address picker only offers real neighbours.** Stepping by two house numbers from the

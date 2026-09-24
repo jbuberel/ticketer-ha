@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ticketer</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <!-- Android colours the status bar with this: match the toolbar under it, not the brand blue. -->
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1f1f1f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <!-- Served by the app itself (see vendor.py): the phone loads nothing from outside the tailnet. -->
+  <link rel="stylesheet" href="/vendor/ionic-9.0.4/css/ionic.bundle.css">
+  <link rel="stylesheet" href="/vendor/ionic-9.0.4/css/palettes/dark.system.css">
+  <script type="module" src="/vendor/ionic-9.0.4/ionic.esm.js"></script>
+  <style>
+    /* Ionic's colours, set to the app's own. Shade and tint are the base mixed 12% toward black
+       and 10% toward white, the way Ionic's colour generator makes them. */
+    :root {
+      --ion-color-primary: #1f5f99;
+      --ion-color-primary-rgb: 31, 95, 153;
+      --ion-color-primary-contrast: #ffffff;
+      --ion-color-primary-contrast-rgb: 255, 255, 255;
+      --ion-color-primary-shade: #1b5487;
+      --ion-color-primary-tint: #356fa3;
+      --ion-color-danger: #b3261e;
+      --ion-color-danger-rgb: 179, 38, 30;
+      --ion-color-danger-contrast: #ffffff;
+      --ion-color-danger-contrast-rgb: 255, 255, 255;
+      --ion-color-danger-shade: #9e211a;
+      --ion-color-danger-tint: #bb3c35;
+      /* Notices and tags carry text on a tint, which Ionic's palette isn't made for: its warning
+         yellow can't be read on white. These are the classic screen's, checked in both themes. */
+      --ok: #1e7a3c; --ok-bg: #e3f4e8; --warn: #8a5a00; --warn-bg: #fdf1d8;
+      --bad: #b3261e; --bad-bg: #fbe4e2; --info: #1f5f99; --info-bg: #e5eef8;
+      --tag-bg: rgba(0, 0, 0, 0.06);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ion-color-primary: #6aa9e0;
+        --ion-color-primary-rgb: 106, 169, 224;
+        --ion-color-primary-contrast: #0b1520;
+        --ion-color-primary-contrast-rgb: 11, 21, 32;
+        --ion-color-primary-shade: #5d95c5;
+        --ion-color-primary-tint: #79b2e3;
+        --ok: #8fd6a4; --ok-bg: #173323; --warn: #f0c56b; --warn-bg: #3a2d10;
+        --bad: #f2b8b5; --bad-bg: #3d1a18; --info: #6aa9e0; --info-bg: #1b2a3a;
+        --tag-bg: rgba(255, 255, 255, 0.1);
+      }
+    }
+    /* iOS sets cards and grouped fields on its grouped grey, not white. Ionic's dark palette
+       leaves the fields as black as the sheet behind them. */
+    .ios ion-content { --background: #f2f2f7; }
+    .ios ion-header[collapse="condense"] ion-toolbar { --background: transparent; }
+    .ios ion-list[inset] ion-item { --background: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      .ios ion-content { --background: #000000; }
+      .ios ion-list[inset] ion-item { --background: #1c1c1e; }
+    }
+
+    /* Ionic's Android buttons are spaced-out capitals; Material 3's are plain sentence case. */
+    ion-button { text-transform: none; letter-spacing: normal; }
+    .muted { color: var(--ion-color-medium); }
+    .small { font-size: 0.85rem; }
+    .warn-text { color: var(--warn); }
+    .error-text { color: var(--bad); }
+    .meta { margin: 4px 16px 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .loading, .empty { display: grid; justify-items: center; gap: 16px; padding: 48px 24px; text-align: center; }
+
+    .notice { margin: 12px 16px; padding: 12px 14px; border-radius: 12px; background: var(--info-bg); color: var(--info); }
+    .notice.ok { background: var(--ok-bg); color: var(--ok); }
+    .notice.warn { background: var(--warn-bg); color: var(--warn); }
+    .notice.error { background: var(--bad-bg); color: var(--bad); }
+    .notice .small { margin-top: 4px; }
+    .notice ion-button { margin: 8px 0 0; }
+    ion-card .notice { margin: 0 16px 12px; }
+
+    .tag {
+      display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 11px;
+      font-size: 0.75rem; font-weight: 600; line-height: 1; white-space: nowrap; vertical-align: middle;
+      background: var(--tag-bg); color: var(--ion-color-medium);
+    }
+    .tag.ok, .tag.ready { background: var(--ok-bg); color: var(--ok); }
+    .tag.warn, .tag.processing, .tag.capturing { background: var(--warn-bg); color: var(--warn); }
+    .tag.bad { background: var(--bad-bg); color: var(--bad); }
+    .tag.edited, .tag.queued { background: var(--info-bg); color: var(--info); }
+
+    ion-card.draft { margin-top: 16px; }
+    ion-card.report { box-shadow: 0 0 0 2px var(--ion-color-primary); }
+    .photo { position: relative; }
+    .photo img { display: block; width: 100%; height: auto; background: var(--tag-bg); }
+    ion-card.skip .photo img { opacity: 0.45; }
+    .photo ion-badge { position: absolute; top: 12px; left: 12px; padding: 6px 10px; font-size: 0.8rem; }
+    /* iOS puts a card's subtitle under its title, in capitals: "GPS ±4 M". Photo number first, as written. */
+    ion-card-header { padding-bottom: 8px; flex-direction: column; }
+    ion-card-subtitle { text-transform: none; letter-spacing: normal; }
+    .plate-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .plate-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+    .plate {
+      font: 700 1.6rem/1.2 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 0.06em;
+      color: var(--ion-text-color, #000);
+    }
+    .plate.unverified { text-decoration: underline wavy var(--warn); text-underline-offset: 6px; }
+    .plate-state { font-weight: 600; color: var(--ion-color-medium); }
+    .plate-crop { display: block; width: 240px; max-width: calc(100% - 32px); margin: 0 16px 8px; border-radius: 8px; }
+
+    .flags {
+      margin: 0 16px 10px; padding: 10px 12px; border-radius: 10px; display: grid; gap: 6px;
+      background: var(--warn-bg); color: var(--warn); font-size: 0.88rem;
+    }
+    .flag { display: flex; gap: 8px; align-items: flex-start; }
+    .flag ion-icon { flex: none; font-size: 18px; }
+
+    ion-card ion-list.facts { padding: 0; background: transparent; }
+    ion-list.facts ion-item { --background: transparent; --min-height: 38px; --padding-start: 16px; font-size: 0.95rem; }
+    ion-list.facts ion-item ion-icon[slot="start"] { margin: 0 14px 0 0; font-size: 20px; color: var(--ion-color-medium); }
+    ion-list.facts ion-label { margin: 6px 0; }
+    ion-list.facts ion-label p { font-size: 0.85rem; color: var(--ion-color-medium); }
+
+    .submission { display: grid; gap: 6px; padding: 4px 16px 8px; }
+    .submission-status { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .submission-status strong { font-variant-numeric: tabular-nums; }
+    .submission ion-accordion-group { margin: 0 -16px; }
+    .submission ion-accordion { background: transparent; }
+    .submission ion-accordion ion-item { --background: transparent; --min-height: 40px; font-size: 0.9rem; color: var(--ion-color-primary); }
+    .sent-detail { padding: 0 16px 12px; font-size: 0.9rem; }
+    .sent-detail .flags { margin: 8px 0; }
+    .payload {
+      margin: 8px 0 0; padding: 10px; border-radius: 8px; background: var(--tag-bg);
+      font-size: 0.72rem; line-height: 1.35; overflow-x: auto; max-height: 20rem;
+    }
+
+    .plate-row ion-button.edit { flex: none; margin: 0 -8px 0 auto; }
+    .review { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 6px 16px 16px; }
+    .review ion-button { margin: 0; height: 48px; white-space: nowrap; }
+
+    .send ion-card-content { display: grid; gap: 10px; color: var(--ion-text-color, #000); }
+    .send .small { color: var(--ion-color-medium); }
+    .send ion-button { margin: 4px 0 0; height: 50px; font-weight: 600; }
+    .end-actions { display: grid; gap: 8px; padding: 8px 16px calc(24px + env(safe-area-inset-bottom)); }
+    .end-actions ion-button { margin: 0; }
+
+    /* The edit sheet */
+    .edit-photo { display: block; width: 100%; max-height: 36vh; object-fit: contain; background: #000; }
+    .edit-crop { display: block; width: 240px; max-width: calc(100% - 32px); margin: 12px auto 0; border-radius: 8px; }
+    /* Specific enough to beat Ionic's own input rules, and on the text only, not its label. */
+    ion-input.plate-input input.native-input {
+      font: 700 1.3rem ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 0.06em; text-transform: uppercase;
+    }
+    .readings { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; padding: 4px 16px 0; font-size: 0.85rem; }
+    .readings .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-weight: 700; }
+    .edit-actions { padding: 8px 16px calc(16px + env(safe-area-inset-bottom)); }
+    .edit-actions ion-button { height: 50px; font-weight: 600; }
+
+    .send-confirm .alert-message { white-space: pre-line; text-align: start; }
+    ion-alert .alert-button-group .alert-button { text-transform: none; letter-spacing: normal; }
+  </style>
+</head>
+<body>
+  <ion-app>
+    <div class="ion-page" id="page"></div>
+  </ion-app>
+  <noscript>Ticketer needs JavaScript.</noscript>
+  <script type="module" src="/review.js"></script>
+</body>
+</html>

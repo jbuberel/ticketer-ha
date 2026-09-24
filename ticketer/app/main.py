@@ -344,11 +344,16 @@ class AppStatic(StaticFiles):
     the API, which is never cached -- so the app looks updated while running the old code, and a
     feature added in the update appears to be missing. (v0.3.2 hit the same thing with stale
     plate close-ups.) ETags keep the cost to one 304 per file per load.
+
+    Vendored libraries are the exception. They sit under a directory named for their version
+    (vendor/ionic-9.0.4/...), so a URL never changes content, and Ionic loads each component as a
+    file of its own: revalidating them all would cost a round trip per component on every load.
     """
 
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
-        response.headers.setdefault("Cache-Control", "no-cache")
+        pinned = path.startswith("vendor/") and response.status_code in (200, 304)
+        response.headers.setdefault("Cache-Control", "max-age=31536000, immutable" if pinned else "no-cache")
         return response
 
 
