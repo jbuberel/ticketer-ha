@@ -1,6 +1,7 @@
 """The phone UI's own files. Nothing else loads its JavaScript, so a broken reference fails only on
 the phone, as a blank screen; these catch the ones that can be caught without a browser."""
 
+import json
 import re
 
 from app.main import STATIC_DIR
@@ -24,3 +25,13 @@ def test_every_screen_the_router_names_is_defined():
                for name in re.findall(r"""customElements\.define\(\s*"([a-z-]+)\"""", path.read_text())}
     assert routed == {"page-home", "page-capture", "page-batch"}
     assert routed <= defined, f"routed but never defined: {routed - defined}"
+
+
+def test_installed_app_colours_suit_dark_mode():
+    """Dark on purpose, though the manifest can't say so. With 3-button navigation, Android fills
+    the strip behind the Back / Home / Recents buttons with the manifest's background_color, baked
+    into the installed app: Chrome never lets the page draw there, and no longer reads a dark
+    variant, so the one colour serves both themes. The Pixel it runs on stays in dark mode, whose
+    buttons are light -- on 0.9.0's white they vanished -- so it is the dark toolbar's own grey."""
+    manifest = json.loads((STATIC_DIR / "manifest.webmanifest").read_text())
+    assert manifest["background_color"] == manifest["theme_color"] == "#1f1f1f"

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.1
+
+- **Android's Back, Home and Recents buttons were hard to see.** With 3-button navigation,
+  Android fills the strip behind those buttons with a colour taken from the app's install
+  settings. That colour was a light grey, and in dark mode the buttons are light too. It's now
+  the same dark grey as the bar above it.
+  - The strip can only have one colour, whether the phone is in light or dark mode: Chrome
+    doesn't let the app paint there itself. Dark suits a phone kept in dark mode. In light mode
+    the buttons would now be dark on dark.
+  - The installed app picks the new colour up when Chrome next refreshes it. Chrome checks when
+    the app is opened, at most once a day. To get it straight away, remove Ticketer from the home
+    screen and install it again from Chrome.
+
 ## 0.9.0
 
 - **The whole app now has the new design.** The home and capture screens join the batch screen
