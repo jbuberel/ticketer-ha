@@ -67,10 +67,12 @@ async function uploadPass() {
     .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt));
 
   let needsRetry = false;
-  for (const capture of pending) {
-    const photo = await store.getPhoto(capture.id);
+  for (const { id } of pending) {
+    const photo = await store.getPhoto(id);
     if (!photo) continue;
-    await store.updateCapture(capture.id, { state: "uploading", error: null });
+    // Read again as it's claimed: its address may have been changed since this pass began.
+    const capture = await store.claimForUpload(id);
+    if (!capture) continue;
     listener();
     try {
       await api("PUT", `/api/batches/${session.batchId}/captures/${capture.id}`, {

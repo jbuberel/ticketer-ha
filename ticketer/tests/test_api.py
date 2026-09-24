@@ -180,7 +180,7 @@ def test_list_batches_newest_first_with_counts(client):
 def test_app_files_are_revalidated_so_a_phone_cannot_run_stale_code(client):
     """Without this the browser caches app.js heuristically: the home screen reports the new
     version (that comes from the API) while the page still runs the old JavaScript."""
-    for path in ("/", "/app.js", "/index.html", "/review.html", "/review.js"):
+    for path in ("/", "/index.html", "/app.js", "/app.css", "/home.js", "/capture.js", "/batch.js"):
         r = client.get(path, headers=ALICE)
         assert r.status_code == 200, path
         assert "no-cache" in r.headers.get("cache-control", ""), f"{path} may be cached blind"

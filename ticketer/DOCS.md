@@ -45,22 +45,24 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
 
 ## Using it
 
-1. **Begin Capture.** Allow location access. The bar at the top shows GPS accuracy and how old
-   the last fix is.
-2. **Snap photo** for each vehicle, then keep walking.
+The app looks like an iPhone app on an iPhone and like an Android app on Android. Pull down on
+the home screen or a batch to refresh it.
+
+1. **Begin capture**, at the bottom of the home screen. Allow location access. The bar at the
+   top shows GPS accuracy and how old the last fix is.
+2. **Snap photo**, at the bottom, for each vehicle, then keep walking.
    - Each photo is saved on the phone right away, with the latest GPS fix, and uploads in the
      background.
    - If there's no recent fix, the photo waits a few seconds for one.
    - The **address** is looked up there and then and appears on the photo in the list. It's
-     used as-is, so you can keep walking. Tap it if it's wrong: the picker lists the
-     neighbouring house numbers on the same side of the street, and a box for anything else.
-     Correcting it works for photos already uploaded, until you stop the session.
+     used as-is, so you can keep walking. Tap it if it's wrong: it offers the neighbouring
+     house numbers on the same side of the street, and **Something else…** to type one.
+     Correcting it works for photos already uploaded, until you finish the session.
    - No signal, or nothing found nearby? The photo goes up without an address and one is worked
      out from its GPS fix during extraction, as before.
-3. **Stop Capture & Process** when you're done. It waits for the remaining uploads, then
-   queues the batch for extraction.
-4. The batch view fills in as each photo is processed, usually 5–10 s per photo. Each draft
-   shows:
+3. **Finish**, top right, when you're done. It waits for the remaining uploads, then queues the
+   batch for extraction.
+4. The batch fills in as each photo is processed, usually 5–10 s per photo. Each draft shows:
    - **Plate** and state, with Claude's confidence.
    - **Local plate reader:** a second, on-device plate reading, and whether it matches.
    - A **close-up** of the plate.
@@ -79,16 +81,16 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
 5. **Review** each draft once the batch is finished. The home screen shows how many are left.
    - The yellow box lists what to check: the plate, a plate that appears twice, a low-confidence
      vehicle, weak GPS or an estimated address, and missing fields.
-   - **Edit** to fix any field. The form shows the plate close-up; when Claude and the local
-     reader disagree, tap either reading to use it.
+   - **Edit**, beside the plate, to fix any field. The form shows the photo and the plate
+     close-up; when Claude and the local reader disagree, tap either reading to use it.
    - **Report** marks the draft to be sent. It needs plate, color, make, model and address. A
      plate that isn't trusted (see above) has to be corrected, or you tick **The plate above
      matches the photo**.
    - **Don't report** for anything that shouldn't be reported, such as a guest with a pass.
      Tap a chosen option again to undo it.
    - Only the person who captured a batch can review it.
-6. **Submit.** Once every draft is decided, the panel at the top of the batch says how many are
-   ready and what will happen.
+6. **Submit.** Once every draft is decided, the panel at the bottom of the batch says how many
+   are ready and what will happen.
    - With **dry run** on (the default), the button builds each request and stops. Open **What
      would be sent** on a draft to read the text an officer would see, and **Show the raw
      request** for the whole payload. Nothing reaches the city.
@@ -104,7 +106,7 @@ You can clear the option afterwards. Uninstalling the app deletes that folder: r
    - **not sent** means it definitely wasn't filed; fix what the message says and submit again.
    - A batch with requests at 311 can't be deleted any more: it's your record of what was sent.
 
-To take out a bad shot, tap **✕** on it; **Discard session** throws the whole session away.
+To take out a bad shot, tap **✕** on it; **Discard**, top left, throws the whole session away.
 To get rid of a finished batch, for example test photos, open it and tap **Delete batch** at the
 bottom. This permanently removes its photos, close-ups and drafts from the server. A batch with
 requests already at 311 can't be deleted by hand — it stays as the record of what was sent, and

@@ -83,6 +83,54 @@ export const removeCapture = (id) => tx(["captures", "photos"], "readwrite", (t)
   t.objectStore("photos").delete(id);
 });
 
+// Each of these checks a capture's state and acts on it in one transaction, so the uploader and
+// a change made on screen can't both act on the same stale copy. Without that, an address picked
+// while an earlier photo was uploading went nowhere: the upload pass had already read this photo,
+// old address and all, and sent that.
+
+// Hand a capture to the uploader: marks it uploading and returns it as it stands now. Null when
+// it was removed, or is no longer waiting to go.
+export const claimForUpload = (id) => tx("captures", "readwrite", (t, done) => {
+  const captures = t.objectStore("captures");
+  const r = captures.get(id);
+  r.onsuccess = () => {
+    if (!r.result || !["queued", "failed"].includes(r.result.state)) return done(null);
+    const claimed = { ...r.result, state: "uploading", error: null };
+    captures.put(claimed);
+    done(claimed);
+  };
+});
+
+// Settle a photo's address on the phone, if it hasn't gone to the server yet; the upload then
+// carries it. Otherwise resolves with the state that stopped it -- uploading or uploaded -- and
+// the address has to be changed on the server instead.
+export const setAddressBeforeUpload = (id, address) => tx("captures", "readwrite", (t, done) => {
+  const captures = t.objectStore("captures");
+  const r = captures.get(id);
+  r.onsuccess = () => {
+    const capture = r.result;
+    if (!capture) return done("removed");
+    if (["uploading", "uploaded"].includes(capture.state)) return done(capture.state);
+    captures.put({ ...capture, address });
+    done("saved");
+  };
+});
+
+// Remove a photo that never reached the server. One that may have -- uploading, uploaded, or a
+// failed upload whose request could still have landed -- is left, and its state returned, for the
+// caller to delete on the server first.
+export const removeIfNotSent = (id) => tx(["captures", "photos"], "readwrite", (t, done) => {
+  const captures = t.objectStore("captures");
+  const r = captures.get(id);
+  r.onsuccess = () => {
+    if (!r.result) return done("removed");
+    if (["uploading", "uploaded", "failed"].includes(r.result.state)) return done(r.result.state);
+    captures.delete(id);
+    t.objectStore("photos").delete(id);
+    done("removed");
+  };
+});
+
 // After a reload, nothing is mid-upload or waiting on a GPS or address callback any more. A photo
 // caught mid-lookup uploads without an address; extraction falls back to geocoding its GPS fix.
 const INTERRUPTED = ["uploading", "locating", "geocoding"];

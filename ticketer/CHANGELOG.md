@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.0
+
+- **The whole app now has the new design.** The home and capture screens join the batch screen
+  previewed in 0.8.0. The old screens, the "Try the new review screen" link and "Classic view"
+  are gone. Screens slide in and out like any other app's, and the phone's own Back gesture
+  works.
+  - **Home:** Begin capture is at the bottom, under your thumb. Batches and filed cases are in
+    lists, and pulling down refreshes them.
+  - **Capture:** Snap photo is at the bottom. Discard is at the top left and Finish (was Stop
+    Capture & Process) at the top right, well away from Snap photo. Tapping an address lists the
+    neighbouring house numbers to pick from, and Something else… to type one.
+- **An address corrected while an earlier photo was still uploading could be lost.** Photos
+  upload one at a time. A photo waiting its turn went up with the address it had when the
+  upload run started, so a correction made during that wait reached the phone but not the
+  server, and the report would have used the old address. The upload now reads each photo's
+  address at the moment it sends it. A photo mid-upload says so and asks you to try again,
+  rather than dropping the change.
+
 ## 0.8.0
 
 - **A preview of a redesigned batch screen.** Each batch now has a "Try the new review screen"

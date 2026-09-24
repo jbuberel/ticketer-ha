@@ -40,3 +40,8 @@ export async function api(method, path, { json, form, timeoutMs = DEFAULT_TIMEOU
     clearTimeout(timer);
   }
 }
+
+// Who is signed in and how the server is set up, asked once per load. Never rejects: a failure
+// comes back as { error }, which the screens show instead of the user's name.
+let me = null;
+export const whoami = () => (me ??= api("GET", "/api/whoami").catch((error) => ({ error: error.message })));
