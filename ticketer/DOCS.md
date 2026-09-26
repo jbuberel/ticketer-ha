@@ -94,9 +94,9 @@ the home screen or a batch to refresh it.
    - With **dry run** on (the default), the button builds each request and stops. Open **What
      would be sent** on a draft to read the text an officer would see, and **Show the raw
      request** for the whole payload. Nothing reaches the city.
-   - With dry run off, the button says how many go to 311 and who they're filed as. It asks you
-     to confirm, listing every plate and address. **This dispatches a parking officer and can't
-     be undone.**
+   - With dry run off, the button says how many go to 311 and who they're filed as. It sends
+     them straight away, without asking again: marking a draft **Report** is the approval.
+     **This dispatches a parking officer and can't be undone.**
    - The photo goes with the request (`attach_photo`, on by default), along with the plate,
      vehicle, address and concern. Turn it off to file text-only requests.
    - Requests go one at a time with a short pause. Each draft then shows **sent to 311** with

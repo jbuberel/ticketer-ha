@@ -593,16 +593,10 @@ class BatchPage extends HTMLElement {
       </ion-card>`;
   }
 
+  // No "are you sure?" dialog, by the owner's choice: marking each draft Report is the approval.
+  // The server refuses a draft that changed since this screen showed it, and one already at 311.
   async submitDrafts(batch, sendable, dryRun) {
     if (this.submitting) return;
-    const what = sendable.map((c, i) => `${i + 1}. ${c.draft.review.values.plate_text} — ${c.draft.review.values.address}`).join("\n");
-    const sure = await confirmed(dryRun
-      ? { header: `Build ${plural(sendable.length, "request")}?`, confirm: "Build",
-          message: `${what}\n\nNothing is sent to 311.`, cssClass: "send-confirm" }
-      : { header: `Send ${plural(sendable.length, "request")} to Sacramento 311?`, confirm: "Send", destructive: true,
-          message: `${what}\n\nThis files real requests and dispatches a parking officer. It can't be undone.`,
-          cssClass: "send-confirm" });
-    if (!sure) return;
     this.submitting = true;
     this.draw();
     try {

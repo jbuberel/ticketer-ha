@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.2
+
+- **Send goes straight to 311.** The dialog that listed every plate and address and asked you to
+  confirm is gone. Marking a draft **Report** is the approval, so pressing Send files the reports
+  at once. With dry run off, that one tap dispatches a parking officer.
+  - A draft changed since the screen showed it is still refused, and so is one already at 311.
+
 ## 0.9.1
 
 - **Android's Back, Home and Recents buttons were hard to see.** With 3-button navigation,

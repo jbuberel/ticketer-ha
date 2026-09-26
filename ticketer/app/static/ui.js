@@ -43,12 +43,12 @@ let asking = false; // a confirmation is open; a second tap mustn't open another
 
 // Resolves true when the confirming button was pressed; Cancel, the backdrop and a second
 // confirmation opened on top of the first all count as no.
-export async function confirmed({ header, message, confirm, destructive = false, cssClass }) {
+export async function confirmed({ header, message, confirm, destructive = false }) {
   if (asking) return false;
   asking = true;
   try {
     const alert = await alertController.create({
-      header, message, cssClass,
+      header, message,
       buttons: [{ text: "Cancel", role: "cancel" }, { text: confirm, role: destructive ? "destructive" : "confirm" }],
     });
     await alert.present();
