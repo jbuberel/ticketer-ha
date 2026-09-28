@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.0
+
+- **Addresses are looked up on the server, in Sacramento County's own address list.** Photos'
+  GPS positions no longer go to an outside geocoder. The list covers every address in the city.
+  The app downloads it when it first starts, about 12 MB in a couple of minutes, and again once
+  a month.
+- **Only real addresses are offered.** The old geocoder guessed a number along the block when no
+  building was close, and could offer a house number that doesn't exist.
+- **The address picker crosses the street.** It lists the nearest real addresses on both sides,
+  in house-number order. At a corner it adds the other street. It used to step along one side
+  only.
+- While the list is downloading, just after installing, the home screen says so and lookups find
+  nothing. Set addresses by hand for photos taken then.
+
 ## 0.9.3
 
 - **Send stopped working once the app had been running for a few days.** Every request failed

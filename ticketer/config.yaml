@@ -1,6 +1,6 @@
 # https://developers.home-assistant.io/docs/apps/configuration#app-configuration
 name: Ticketer
-version: "0.9.3"
+version: "0.10.0"
 slug: ticketer
 description: Phone-captured parking reports, reviewed by you, then filed with Sacramento 311
 url: "https://github.com/jbuberel/ticketer-ha"
@@ -10,9 +10,11 @@ arch:
 image: "ghcr.io/jbuberel/ticketer"
 stage: experimental
 # Supervisor matches each pattern against the right-hand end of every file path under /data,
-# so this skips photos/<batch>/<file> and keeps ticketer.db.
+# so this skips photos/<batch>/<file> and keeps ticketer.db. The address list is left out too:
+# the app downloads it again when it's missing.
 backup_exclude:
   - "photos/*/*"
+  - "addresses.db*"
 # No ports, no host network, no HA API: the app is reachable only over Tailscale.
 options:
   tailscale_hostname: ticketer

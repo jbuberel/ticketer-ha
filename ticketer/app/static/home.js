@@ -28,21 +28,24 @@ class HomePage extends HTMLElement {
     this.batches = null; // null while loading
     this.batchesError = null;
     this.cases = [];
+    this.addresses = null;
     this.draw();
     this.load();
   }
 
   async load() {
-    const [me, batches, cases] = await Promise.all([
+    const [me, batches, cases, addresses] = await Promise.all([
       whoami(),
       api("GET", "/api/batches").then(({ batches }) => ({ batches }), (error) => ({ error: error.message })),
       // The ledger is a footnote on this screen; a failure here shouldn't bury the batch list.
       api("GET", "/api/cases").then(({ cases }) => cases, () => []),
+      api("GET", "/api/addresses").catch(() => null),
     ]);
     this.me = me;
     this.batches = batches.batches ?? this.batches;
     this.batchesError = batches.error ?? null;
     this.cases = cases;
+    this.addresses = addresses;
     this.draw();
   }
 
@@ -66,6 +69,7 @@ class HomePage extends HTMLElement {
         ${me?.error
           ? notice("error", `Not signed in: ${me.error}`)
           : html`<div class="meta muted small">${me ? `${me.user_name || me.user_login} · v${me.version}` : ""}</div>`}
+        ${this.addressNotice()}
         <h2 class="section-title">Recent batches</h2>
         ${this.batchList()}
         ${this.caseList()}
@@ -77,6 +81,17 @@ class HomePage extends HTMLElement {
           </ion-button>
         </ion-toolbar>
       </ion-footer>`;
+  }
+
+  // Addresses are looked up in a list the server downloads when the app first starts. Until it
+  // has one, every lookup finds nothing: say why, rather than leave each photo saying "No address".
+  addressNotice() {
+    const list = this.addresses;
+    if (!list || list.ready) return nothing;
+    if (list.error && !list.refreshing) {
+      return notice("error", `Couldn't get the address list (${list.error}). The app tries again every hour; until then, set addresses by hand.`);
+    }
+    return notice("warn", "Getting Sacramento County's address list: a few minutes, once. Until then, addresses can't be looked up, so set them by hand.");
   }
 
   batchList() {

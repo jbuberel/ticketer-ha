@@ -22,9 +22,10 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel, ConfigDict
 
+from .addresses import ADDRESS_FILE, AddressRefresher
 from .db import LIVE_SUBMISSION_STATUSES, Database
 from .extract import ClaudeExtractor
-from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder, GeocodeError, verified_candidates
+from .geocode import CountyGeocoder, GeocodeError
 from .plates import FastAlprReader, normalize_plate
 from .retention import Reaper, RetentionPolicy, expires_at
 from .sac311 import Reporter, Sac311Portal, Sac311Service
@@ -48,7 +49,6 @@ class Settings:
     max_photo_bytes: int = 30 * 1024 * 1024
     anthropic_api_key: str | None = None
     extractor_model: str = DEFAULT_EXTRACTOR_MODEL
-    geocoder_url: str = CITY_311_GEOCODER
     run_worker: bool = True
     # 311 submission. Dry run is the default and has to be turned off deliberately: with it on,
     # a submission assembles the payload and stops without creating a case.
@@ -79,7 +79,6 @@ class Settings:
             dev_user=os.environ.get("TICKETER_DEV_USER") or None,
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
             extractor_model=os.environ.get("TICKETER_EXTRACTOR_MODEL") or DEFAULT_EXTRACTOR_MODEL,
-            geocoder_url=os.environ.get("TICKETER_GEOCODER_URL") or CITY_311_GEOCODER,
             submit_dry_run=(os.environ.get("TICKETER_SUBMIT_DRY_RUN", "true").lower() != "false"),
             attach_photo=(os.environ.get("TICKETER_ATTACH_PHOTO", "true").lower() != "false"),
             reporter_first_name=os.environ.get("TICKETER_REPORTER_FIRST_NAME") or None,
@@ -103,7 +102,7 @@ def default_pipeline(settings: Settings) -> Pipeline:
         extractor=(ClaudeExtractor(settings.extractor_model, settings.anthropic_api_key)
                    if settings.anthropic_api_key else None),
         plate_reader=FastAlprReader(),
-        geocoder=ArcGisReverseGeocoder(settings.geocoder_url),
+        geocoder=CountyGeocoder(settings.data_dir / ADDRESS_FILE),
     )
 
 
@@ -370,6 +369,7 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
                                        attach_photo=settings.attach_photo))
     retention = settings.retention()
     reaper = Reaper(db, photos_dir, retention)
+    addresses = AddressRefresher(settings.data_dir / ADDRESS_FILE)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -379,18 +379,21 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
             worker.start()
             submitter.start()
             reaper.start()  # sweeps immediately, so a restart catches up on anything overdue
+            addresses.start()  # downloads the address list at once if there isn't one yet
         try:
             yield
         finally:
             worker.stop()
             submitter.stop()
             reaper.stop()
+            addresses.stop()
 
     app = FastAPI(title="Ticketer", version=VERSION, lifespan=lifespan)
     app.state.db = db
     app.state.worker = worker
     app.state.submitter = submitter
     app.state.reaper = reaper
+    app.state.addresses = addresses
 
     def current_user(request: Request) -> User:
         # Tailscale Serve sets these headers; the API itself only listens on localhost.
@@ -435,18 +438,25 @@ def create_app(settings: Settings | None = None, pipeline: Pipeline | None = Non
     ) -> dict:
         """The address nearest a GPS fix, with its neighbours to choose from. The capture screen
         calls this per photo, so the address is settled while the phone is still in front of the
-        house rather than from memory hours later."""
+        house rather than from memory hours later. Both are looked up on this server."""
         if pipeline.geocoder is None:
             raise HTTPException(503, "No geocoder is configured")
         try:
             address = pipeline.geocoder.reverse(lat, lon)
+            if address is None:
+                return {"address": None, "candidates": []}
+            candidates = pipeline.geocoder.candidates(lat, lon)
         except GeocodeError as e:
             raise HTTPException(502, str(e)) from e
-        if address is None:
-            return {"address": None, "candidates": []}
         return {"address": address.street, "address_full": address.full, "address_match": address.match_type,
-                "address_distance_m": address.distance_m,
-                "candidates": verified_candidates(pipeline.geocoder, address)}
+                "address_distance_m": address.distance_m, "candidates": candidates}
+
+    @app.get("/api/addresses")
+    def address_list(user: CurrentUser) -> dict:
+        """Whether the address list lookups run on is here yet. It is downloaded when the app
+        first starts, so for a few minutes after installing every lookup finds nothing, and the
+        home screen says why."""
+        return addresses.status()
 
     @app.post("/api/batches", status_code=201)
     def create_batch(body: BatchCreate, user: CurrentUser, response: Response) -> dict:

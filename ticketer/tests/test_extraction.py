@@ -1,12 +1,10 @@
 """Extraction worker tests with a fake extractor, plate reader and geocoder (no network, no models)."""
 
-import re
-
 import pytest
 from fastapi.testclient import TestClient
 
 from app.extract import Extraction, ExtractionError, VehicleReport
-from app.geocode import Address, GeocodeError, parse_reverse_geocode
+from app.geocode import Address, GeocodeError
 from app.main import Settings, create_app
 from app.plates import PlateRead, readable
 from app.worker import Pipeline
@@ -46,9 +44,9 @@ class FakePlates:
 
 
 class FakeGeocoder:
-    def __init__(self, error=None, missing_numbers: frozenset[int] = frozenset()):
+    def __init__(self, error=None, nearby=("100 Example St", "101 Example St", "102 Example St")):
         self.error = error
-        self.missing_numbers = missing_numbers  # house numbers with no parcel, e.g. a driveway gap
+        self.nearby = list(nearby)  # the picker's list, already in its order
 
     def reverse(self, lat, lon):
         if self.error:
@@ -57,11 +55,10 @@ class FakeGeocoder:
                        city="Sacramento", postal="95814", match_type="PointAddress",
                        lat=lat, lon=lon + 0.0001, distance_m=8.7)
 
-    def is_real_address(self, street, city=None):
+    def candidates(self, lat, lon):
         if self.error:
             raise self.error
-        number = int(re.match(r"(\d+)", street)[1])
-        return number not in self.missing_numbers
+        return self.nearby
 
 
 @pytest.fixture
@@ -238,25 +235,3 @@ def test_capture_without_gps_skips_geocoding(make_client):
         drain(client)
         draft = get(client, batch_id)["captures"][0]["draft"]
     assert draft["status"] == "done" and draft["address"] is None and draft["geocode_error"] is None
-
-
-# A real response from the geocoder for Sacramento City Hall (a public landmark).
-CITY_HALL = {
-    "address": {"Match_addr": "915-999 I St, Sacramento, California, 95814", "ShortLabel": "915-999 I St",
-                "Addr_type": "StreetAddress", "AddNum": "967", "Address": "967 I St", "City": "Sacramento",
-                "Postal": "95814"},
-    "location": {"x": -121.493318337979, "y": 38.581538437996, "spatialReference": {"wkid": 4326}},
-}
-
-
-def test_parse_reverse_geocode():
-    address = parse_reverse_geocode(CITY_HALL, 38.5816, -121.4933)
-    assert (address.street, address.match_type, address.postal) == ("967 I St", "StreetAddress", "95814")
-    assert address.full == "915-999 I St, Sacramento, California, 95814"
-    assert 0 < address.distance_m < 10
-
-    no_match = {"error": {"code": 400, "message": "Cannot perform query. Invalid query parameters.",
-                          "details": ["Unable to find address for the specified location."]}}
-    assert parse_reverse_geocode(no_match, 38.5816, -121.4933) is None
-    with pytest.raises(GeocodeError):
-        parse_reverse_geocode({"error": {"code": 498, "message": "Invalid token."}}, 38.5816, -121.4933)

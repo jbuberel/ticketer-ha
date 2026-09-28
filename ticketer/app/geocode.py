@@ -1,25 +1,21 @@
-"""Reverse geocoding: a GPS fix -> the nearest street address.
+"""Reverse geocoding: a GPS fix -> the real street addresses nearest it.
 
-Uses the ArcGIS World GeocodeServer that the City of Sacramento 311 portal's address map calls.
+Looked up on this server in Sacramento County's own address list (see addresses.py), so a fix
+never leaves it. Every address offered is one the county has a point for: nothing is estimated
+along the block, which is how an earlier geocoder came to offer a number with no house.
 """
 
-import json
 import math
-import re
-import urllib.parse
-import urllib.request
+import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
-from .tls import verified_context
+from .addresses import read_only
 
-CITY_311_GEOCODER = (
-    "https://utility.arcgis.com/usrsvcs/servers/3f594920d25340bcb7108f137a28cda1/rest/services/World/GeocodeServer"
-)
-MAX_BUILDING_DISTANCE_M = 40  # beyond this, an address along the block is the better guess
-NEARBY_STEPS = 2       # real neighbours wanted on each side of the matched one
-MAX_SEARCH_STEPS = 8   # how far out to look for them before giving up
-HOUSE_NUMBER_STEP = 2  # one side of a street is all odd or all even
+NEARBY_RADIUS_M = 100  # further than this, a house is likelier the next block than the one in front
+NEARBY_LIMIT = 6       # the picker's list: both sides of the street near the fix, and a corner
+METERS_PER_DEGREE = 111_320
 
 
 @dataclass(frozen=True)
@@ -28,7 +24,7 @@ class Address:
     full: str  # "800 10th St, Sacramento, California, 95814"
     city: str | None
     postal: str | None
-    match_type: str | None  # PointAddress (a building) or StreetAddress (interpolated along the block)
+    match_type: str | None  # PointAddress: a real address point (earlier drafts also have StreetAddress)
     lat: float
     lon: float
     distance_m: float  # from the GPS fix to the matched location
@@ -36,7 +32,7 @@ class Address:
 
 class Geocoder(Protocol):
     def reverse(self, lat: float, lon: float) -> Address | None: ...
-    def is_real_address(self, street: str, city: str | None = None) -> bool: ...
+    def candidates(self, lat: float, lon: float) -> list[str]: ...
 
 
 class GeocodeError(Exception):
@@ -49,117 +45,68 @@ def distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * 6371000.0 * math.asin(math.sqrt(a))
 
 
-def parse_reverse_geocode(payload: dict, lat: float, lon: float) -> Address | None:
-    if "error" in payload:
-        error = payload["error"]
-        text = " ".join([str(error.get("message", "")), *map(str, error.get("details") or [])])
-        if "unable to find" in text.lower():
-            return None
-        raise GeocodeError(f"Geocoder error: {text.strip()}")
-    address, location = payload.get("address") or {}, payload.get("location") or {}
-    street = address.get("Address") or address.get("ShortLabel")
-    if not street or "x" not in location:
-        return None
-    return Address(
-        street=street,
-        full=address.get("Match_addr") or street,
-        city=address.get("City") or None,
-        postal=address.get("Postal") or None,
-        match_type=address.get("Addr_type") or None,
-        lat=location["y"],
-        lon=location["x"],
-        distance_m=round(distance_m(lat, lon, location["y"], location["x"]), 1),
-    )
+def street_name(street: str) -> str:
+    """The county's capitals as people write a street: "12TH ST" -> "12th St"."""
+    def word(token: str) -> str:
+        if token[:1].isdigit():
+            return token.lower()  # "12TH" -> "12th", "1/2" stays
+        if token.startswith("MC") and len(token) > 2 and token.isalpha():
+            return "Mc" + token[2:].capitalize()  # "MCCLATCHY" -> "McClatchy"
+        return token.capitalize()
+    return " ".join(word(token) for token in street.split())
 
 
-REAL_ADDRESS_MIN_SCORE = 80  # forward-geocode confidence; every exact match observed scores 100
+def street_line(number: int, suffix: str, street: str) -> str:
+    return " ".join(part for part in (str(number), suffix, street_name(street)) if part)
 
 
-def parse_forward_geocode(payload: dict) -> tuple[str | None, float]:
-    """The (Addr_type, score) of a forward geocode's best candidate, or (None, 0) for no match.
+class CountyGeocoder:
+    """Looks fixes up in `addresses.db`, which addresses.AddressRefresher keeps current."""
 
-    `PointAddress` is a real parcel; `StreetAddress` is a number interpolated along the block
-    that may not correspond to any building at all.
-    """
-    if "error" in payload:
-        error = payload["error"]
-        text = " ".join([str(error.get("message", "")), *map(str, error.get("details") or [])])
-        raise GeocodeError(f"Geocoder error: {text.strip()}")
-    candidates = payload.get("candidates") or []
-    if not candidates:
-        return None, 0
-    best = candidates[0]
-    return best.get("attributes", {}).get("Addr_type"), best.get("score", 0)
+    def __init__(self, path: Path, radius_m: float = NEARBY_RADIUS_M, limit: int = NEARBY_LIMIT):
+        self.path = path
+        self.radius_m = radius_m
+        self.limit = limit
 
-
-class ArcGisReverseGeocoder:
-    def __init__(self, url: str = CITY_311_GEOCODER, timeout: float = 15.0):
-        self.url = url.rstrip("/")
-        self.timeout = timeout
-
-    def _get(self, endpoint: str, params: dict) -> dict:
-        request = urllib.request.Request(
-            f"{self.url}/{endpoint}?{urllib.parse.urlencode(params)}",
-            headers={"User-Agent": "Mozilla/5.0 (ticketer Home Assistant app)"},
-        )
+    def _nearest(self, lat: float, lon: float) -> list[tuple]:
+        """(distance, number, suffix, street, zip, lat, lon) for the addresses within reach of the
+        fix, nearest first."""
+        if not self.path.is_file():
+            raise GeocodeError("The address list is still downloading")
+        dlat = self.radius_m / METERS_PER_DEGREE
+        dlon = dlat / max(math.cos(math.radians(lat)), 0.01)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout,
-                                        context=verified_context()) as response:
-                return json.load(response)
-        except (OSError, ValueError) as e:
-            raise GeocodeError(f"Geocoder unavailable: {e}") from e
-
-    def _call(self, lat: float, lon: float, feature_type: str | None = None) -> dict:
-        params = {"location": f"{lon},{lat}", "outSR": "4326", "f": "json"}
-        if feature_type:
-            params["featureTypes"] = feature_type
-        return self._get("reverseGeocode", params)
+            conn = read_only(self.path)
+            try:
+                rows = conn.execute(
+                    "SELECT number, suffix, street, zip, lat, lon FROM addresses"
+                    " WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?",
+                    (lat - dlat, lat + dlat, lon - dlon, lon + dlon)).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            raise GeocodeError(f"Can't read the address list: {e}") from e
+        near = sorted((distance_m(lat, lon, row[4], row[5]), *row) for row in rows)
+        return [row for row in near if row[0] <= self.radius_m][:self.limit]
 
     def reverse(self, lat: float, lon: float) -> Address | None:
-        building = parse_reverse_geocode(self._call(lat, lon, "PointAddress"), lat, lon)
-        if building and building.distance_m <= MAX_BUILDING_DISTANCE_M:
-            return building
-        return parse_reverse_geocode(self._call(lat, lon), lat, lon) or building
+        near = self._nearest(lat, lon)
+        if not near:
+            return None
+        distance, number, suffix, street, zip_code, a_lat, a_lon = near[0]
+        line = street_line(number, suffix, street)
+        return Address(street=line, full=", ".join(filter(None, (line, "Sacramento", "California", zip_code))),
+                       city="Sacramento", postal=zip_code or None, match_type="PointAddress",
+                       lat=a_lat, lon=a_lon, distance_m=round(distance, 1))
 
-    def is_real_address(self, street: str, city: str | None = None) -> bool:
-        text = f"{street}, {city}" if city else street
-        payload = self._get("findAddressCandidates", {
-            "SingleLine": text, "outFields": "Addr_type", "f": "json", "maxLocations": "1",
-        })
-        addr_type, score = parse_forward_geocode(payload)
-        return addr_type == "PointAddress" and score >= REAL_ADDRESS_MIN_SCORE
-
-
-def verified_candidates(geocoder: Geocoder, address: Address, wanted: int = NEARBY_STEPS,
-                         max_steps: int = MAX_SEARCH_STEPS) -> list[str]:
-    """The matched address plus up to `wanted` confirmed real neighbours on each side.
-
-    Stepping by two assumes a house every two numbers, which often isn't true -- a driveway, a
-    lot split, or two houses sharing one address all leave a gap, sometimes several numbers wide.
-    This walks outward confirming each candidate against the geocoder's own parcel data, and
-    keeps going past a gap instead of stopping at the first one. Still bounded by the hundred
-    block and by `max_steps`, so one sparse side can't hang the picker on an empty block.
-    """
-    match = re.match(r"(\d+)(\s.*)$", address.street)
-    if not match:
-        return [address.street]  # no leading house number to step: offer what was matched
-    number, rest = int(match[1]), match[2]
-    hundred_block = number // 100
-
-    def real_neighbours(direction: int) -> list[int]:
-        found = []
-        for step in range(1, max_steps + 1):
-            n = number + HOUSE_NUMBER_STEP * step * direction
-            if n <= 0 or n // 100 != hundred_block:
-                break  # off the block: a guess this far out is more likely someone else's
-            try:
-                if geocoder.is_real_address(f"{n}{rest}", address.city):
-                    found.append(n)
-                    if len(found) == wanted:
-                        break
-            except GeocodeError:
-                pass  # can't confirm it exists -- leave it out rather than offer a guess
-        return found
-
-    numbers = real_neighbours(-1) + [number] + real_neighbours(1)
-    return [f"{n}{rest}" for n in sorted(numbers)]
+    def candidates(self, lat: float, lon: float) -> list[str]:
+        """The picker's list. The nearest address's street comes first, then any other street in
+        the order it comes near, each in house-number order: the houses opposite sit among their
+        neighbours, and a corner house, or the street behind when the fix drifted, comes after."""
+        near = self._nearest(lat, lon)
+        rank: dict[str, int] = {}
+        for row in near:  # nearest first, so each street is ranked by its nearest address
+            rank.setdefault(row[3], len(rank))
+        ordered = sorted(near, key=lambda row: (rank[row[3]], row[1], row[2]))
+        # dict.fromkeys: an address listed under two ZIP codes is still one choice
+        return list(dict.fromkeys(street_line(number, suffix, street) for _, number, suffix, street, *_ in ordered))

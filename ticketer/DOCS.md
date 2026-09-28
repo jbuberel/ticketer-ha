@@ -115,17 +115,20 @@ If the app is closed or the page reloads mid-session, reopening it resumes the s
 
 ## Your data
 
-- Stored in the app's data folder: `ticketer.db` (batches, locations, drafts) and `photos/`
-  (photos and plate close-ups).
-- Photos are excluded from Home Assistant backups. The database, including extracted plates, is
-  included.
+- Stored in the app's data folder: `ticketer.db` (batches, locations, drafts), `photos/`
+  (photos and plate close-ups), and `addresses.db` (Sacramento County's address list).
+- Photos and the address list are excluded from Home Assistant backups. The database, including
+  extracted plates, is included.
+- **Looked up on this server:**
+  - Addresses. Each photo's GPS position is matched against Sacramento County's own list of
+    every address in the city, so the position never leaves the server, and every address
+    offered is a real one. The list is about 12 MB and is downloaded when the app first starts,
+    then once a month. That download asks for the whole city, not for anywhere in particular.
+    Address data: Sacramento County GIS, dedicated to the public domain.
+  - Plates, with the local plate reader.
 - **Sent elsewhere:**
   - Each photo, downscaled and with its metadata removed, goes to the **Anthropic API** for
     extraction.
-  - Each photo's GPS position goes to the **ArcGIS geocoder** that the City of Sacramento 311
-    address map uses — while you're capturing, and again during extraction for any photo that
-    has no address yet.
-  - The local plate reader runs on this server.
   - When you submit, the request goes to **Sacramento 311**: the plate, vehicle colour, make
     and model, the address, the photo if `attach_photo` is on, and your contact details if you
     set them. The city's own map details for that address travel with it, as they do from the
@@ -175,6 +178,7 @@ turned off.
 | App: `Not signed in: No Tailscale identity` | Open the `https://ticketer.<tailnet>.ts.net` address, with Tailscale connected |
 | Submit says `dry run` and you want to send | Turn off `submit_dry_run` in the Configuration tab and restart the app |
 | `The city's map can't place ...` | Edit the draft's address. It has to be a real address inside Sacramento |
+| Every photo says "No address" just after installing | The address list is still downloading; the home screen says so. It takes a few minutes, once. Set addresses by hand meanwhile |
 | A draft is stuck on `unconfirmed` | Check the city's 311 open data for a case at that address, then decide whether to send it again |
 | Phone: "Can't connect to the site", yet Tailscale is connected and `tailscale ping ticketer` works | The phone can't look up the `ts.net` name (the app log shows no requests). To confirm, open `https://<ticketer's Tailscale IP>/`: "can't provide a secure connection" means the connection works and only the lookup fails. Set Android Private DNS to Automatic/Off, set Chrome secure DNS to your current provider or off, check **Use Tailscale DNS** is on in the Tailscale app. If it still fails, restart the phone |
 | GPS bar: `Location permission denied` | Allow location for the site (iPhone: Settings → Privacy & Security → Location Services → Safari Websites) |
