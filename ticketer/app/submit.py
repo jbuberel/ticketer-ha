@@ -10,6 +10,9 @@ Safety rules this module exists to enforce:
 - No automatic retry, ever. If we don't know whether a case was created, the row is left
   `unknown` for the owner to check against the city's open data. Retrying would risk sending two
   officers to one car.
+
+Each submission gets a portal client of its own. The portal's tokens expire, and one client kept
+for the life of the app went on sending expired ones: every send failed until a restart.
 """
 
 import json
@@ -18,6 +21,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,11 +47,11 @@ class SubmitConfig:
 
 
 class Submitter:
-    def __init__(self, db: Database, data_dir: Path, service: Sac311Service | None,
+    def __init__(self, db: Database, data_dir: Path, service_factory: Callable[[], Sac311Service] | None,
                  config: SubmitConfig, pause: float = PAUSE_BETWEEN_SECONDS):
         self.db = db
         self.data_dir = data_dir
-        self.service = service
+        self.service_factory = service_factory
         self.config = config
         self.pause = pause
         self._wake = threading.Event()
@@ -105,15 +109,16 @@ class Submitter:
         return True
 
     def _send(self, row: sqlite3.Row) -> None:
-        if self.service is None:
+        if self.service_factory is None:
             return self._finish(row["id"], "failed", error="311 submission is not configured")
         dry_run = bool(row["dry_run"])
         report = self._report_for(row)
         if report is None:
             return self._finish(row["id"], "failed",
                                 error="This draft is missing fields a 311 request needs")
+        service = self.service_factory()  # fresh tokens: one visit to the portal per request
         try:
-            prepared = self.service.prepare(report, self.config.reporter)
+            prepared = service.prepare(report, self.config.reporter)
         except Sac311Error as e:
             return self._finish(row["id"], "failed", error=str(e))
 
@@ -125,7 +130,7 @@ class Submitter:
 
         photo = self._photo(row) if self.config.attach_photo else None
         try:
-            result = self.service.submit(prepared, photo)
+            result = service.submit(prepared, photo)
         except SubmissionUncertain as e:
             # Do not retry. The owner checks the city's open data for a matching case.
             log.error("submission %s is uncertain: %s", row["id"], e)

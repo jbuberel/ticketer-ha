@@ -315,8 +315,16 @@ def question_records(questions: list[dict], answers: dict[str, str]) -> list[dic
 
 
 class Sac311Portal:
-    """Talks to the live portal. Construct one per submission run: the Aura context and the
-    remoting tokens are fetched lazily and are only good for a short while."""
+    """Talks to the live portal. Construct one per submission: the Aura context and the
+    remoting tokens are fetched lazily and are only good for a short while.
+
+    Measured on 2026-09-27: the address map's CSRF token carries an expiry 72 hours after the
+    page is fetched, and its authorization token only an issue time, which Salesforce checks
+    against a limit of its own. The Aura framework id changes whenever the portal is redeployed.
+    An instance kept for the life of the app went on sending expired tokens, and every
+    validateAddress came back "Remoting request authorization expired. Refresh the page and try
+    again" -- advice meant for a browser, which no refresh of the phone could act on.
+    """
 
     def __init__(self, base_url: str = PORTAL, timeout: float = DEFAULT_TIMEOUT):
         self.base_url = base_url.rstrip("/")

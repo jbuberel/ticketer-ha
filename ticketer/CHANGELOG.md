@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.3
+
+- **Send stopped working once the app had been running for a few days.** Every request failed
+  with "validateAddress failed: Remoting request authorization expired. Refresh the page and try
+  again", and refreshing changed nothing. The app kept the city's address-map tokens from its
+  first send and reused them, and the city stops accepting them after a few days. Each request
+  now starts with fresh ones, as a browser opening the form would.
+  - Nothing reached 311 while this was happening. The check that failed runs before the photo
+    upload and before the case is created, so failed drafts can simply be sent again.
+  - The message is the city's, written for someone on its website. No refresh of the phone could
+    have helped. Before this update, restarting the app cleared it.
+
 ## 0.9.2
 
 - **Send goes straight to 311.** The dialog that listed every plate and address and asked you to

@@ -9,7 +9,7 @@ import re
 import shutil
 import sqlite3
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,7 +27,7 @@ from .extract import ClaudeExtractor
 from .geocode import CITY_311_GEOCODER, ArcGisReverseGeocoder, GeocodeError, verified_candidates
 from .plates import FastAlprReader, normalize_plate
 from .retention import Reaper, RetentionPolicy, expires_at
-from .sac311 import Reporter, Sac311Portal
+from .sac311 import Reporter, Sac311Portal, Sac311Service
 from .submit import SubmitConfig, Submitter, queue
 from .worker import Pipeline, Worker, plate_crop_path
 
@@ -358,13 +358,14 @@ class AppStatic(StaticFiles):
 
 
 def create_app(settings: Settings | None = None, pipeline: Pipeline | None = None,
-               sac311: Sac311Portal | None = None) -> FastAPI:
+               sac311: Callable[[], Sac311Service] | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     db = Database(settings.data_dir / "ticketer.db")
     photos_dir = settings.data_dir / "photos"
     pipeline = pipeline or default_pipeline(settings)
     worker = Worker(db, settings.data_dir, pipeline)
-    submitter = Submitter(db, settings.data_dir, sac311 or Sac311Portal(),
+    # A factory, not a client: the portal's tokens expire, so each request starts a fresh visit.
+    submitter = Submitter(db, settings.data_dir, sac311 or Sac311Portal,
                           SubmitConfig(reporter=settings.reporter(), dry_run=settings.submit_dry_run,
                                        attach_photo=settings.attach_photo))
     retention = settings.retention()

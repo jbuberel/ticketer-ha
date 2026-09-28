@@ -52,13 +52,16 @@ class FakePortal:
 
 @pytest.fixture
 def make_client(tmp_path):
-    def make(portal=None, dry_run=True, reporter_email="owner@example.com"):
+    def make(portal=None, dry_run=True, reporter_email="owner@example.com", new_portal=None):
+        """`portal` is shared by every submission, so a test can inspect it afterwards;
+        `new_portal` is a factory, for tests about the clients themselves."""
         settings = Settings(data_dir=tmp_path, run_worker=False, submit_dry_run=dry_run,
                             reporter_first_name="Pat", reporter_last_name="Resident",
                             reporter_email=reporter_email)
         pipeline = Pipeline(extractor=FakeExtractor(*[extraction() for _ in range(5)]),
                             plate_reader=FakePlates(), geocoder=FakeGeocoder())
-        app = create_app(settings, pipeline=pipeline, sac311=portal or FakePortal())
+        portal = portal or FakePortal()
+        app = create_app(settings, pipeline=pipeline, sac311=new_portal or (lambda: portal))
         return TestClient(app)
     return make
 
@@ -151,6 +154,25 @@ def test_the_report_carries_the_reviewed_values_not_the_extracted_ones(make_clie
     report = portal.prepared[0]
     assert (report.make, report.address) == ("Lexus", "1200 Example St")
     assert report.model == "Camry"  # untouched fields still come from extraction
+
+
+def test_each_submission_gets_a_fresh_portal_client(make_client):
+    """The portal's tokens expire, so no client may outlive its submission. One kept for the life
+    of the app sent expired tokens, and every send failed until a restart."""
+    built = []
+
+    def new_portal():
+        built.append(FakePortal())
+        return built[-1]
+
+    with make_client(new_portal=new_portal, dry_run=False) as client:
+        for _ in range(2):
+            batch_id, capture = ready_draft(client)
+            send(client, batch_id, capture, dry_run=False)
+        assert built == []  # nothing is built until there is something to send
+        run_submitter(client)
+
+    assert [(len(p.prepared), len(p.submitted)) for p in built] == [(1, 1), (1, 1)]
 
 
 def test_anonymous_when_no_reporter_is_configured(make_client):
